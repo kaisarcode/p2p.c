@@ -168,6 +168,16 @@ Do not use STUN when:
 
 STUN is never enabled by default. You must pass `--stun` or define `HPM_STUN`.
 
+STUN remains optional because it is used only for public UDP endpoint discovery.
+It does not relay or carry application payloads, it only helps peers learn which
+direct address and port to try for hole punching.
+
+HPM does not support TURN-style fallback. TURN relays application traffic through
+a third party, which changes the model from direct peer-to-peer transport to
+server-mediated transport. HPM is designed to preserve direct P2P data paths, so
+on restrictive NATs where direct connectivity cannot be established, some
+sessions may fail instead of degrading to a relay.
+
 Examples:
 
 ```bash
@@ -341,7 +351,9 @@ kc_hpm_set_pass(ctx, "password");
 - Each accepted local TCP client creates a separate peer session.
 - The publisher can serve multiple consumers concurrently.
 - `--udp` mode forwards UDP datagrams directly through the tunnel with no protocol conversion, ordering, or retransmission.
-- `--stun` is opt-in. Without it, hpm does not depend on external STUN services.
+- `--stun` is opt-in and used only for endpoint discovery. It does not carry application payloads.
+- HPM does not implement TURN or relay application traffic through the index or other third-party servers.
+- On restrictive NATs where direct UDP connectivity cannot be established, some sessions may fail by design rather than fall back to relayed transport.
 
 ---
 
