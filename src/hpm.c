@@ -28,7 +28,7 @@
 #include <sys/stat.h>
 #endif
 
-#define KC_HPM_VERSION "1.0.0"
+#define KC_HPM_VERSION "1.0.1"
 
 extern volatile sig_atomic_t kc_hpm_stop_requested;
 
@@ -134,6 +134,7 @@ static void print_help(const char *name) {
     printf("  HPM_VIP                Reserved seat passwords as '<id> <pass> ...'\n");
     printf("  HPM_SWEEP              UDP port sweep range used during punch fallback\n");
     printf("  HPM_STUN               Optional STUN URL (stun:host:port)\n");
+    printf("  IDs cannot contain whitespace, '@', or ':'\n");
 }
 
 /**
@@ -231,6 +232,11 @@ int main(int argc, char **argv) {
         if (parse_hostspec(argv[2], host, sizeof(host), idx_host, sizeof(idx_host), &idx_port) != 0) {
             fprintf(stderr, "hpm: invalid spec '%s' (expected host@index:port)\n", argv[2]); kc_hpm_options_free(&opts); return 1;
         }
+        if (!kc_hpm_is_valid_id(host)) {
+            fprintf(stderr, "hpm: invalid host id '%s'\n", host);
+            kc_hpm_options_free(&opts);
+            return 1;
+        }
 
         for (int i = 3; i < argc; i++) {
             if (strcmp(argv[i], "--tcp") == 0) {
@@ -287,6 +293,10 @@ int main(int argc, char **argv) {
         if (parse_hostspec(argv[2], host, sizeof(host), idx_host, sizeof(idx_host), &idx_port) != 0) {
             fprintf(stderr, "hpm: invalid spec '%s' (expected host@index:port)\n", argv[2]); return 1;
         }
+        if (!kc_hpm_is_valid_id(host)) {
+            fprintf(stderr, "hpm: invalid host id '%s'\n", host);
+            return 1;
+        }
 
         if (kc_hpm_open(&ctx) != KC_HPM_OK) { fprintf(stderr, "hpm: failed to create context\n"); return 1; }
         ret = kc_hpm_deregister(ctx, idx_host, idx_port, host);
@@ -313,6 +323,11 @@ int main(int argc, char **argv) {
         if (argc < 3) { fprintf(stderr, "hpm: usage: %s con <host>@<index[:port]>\n", argv[0]); kc_hpm_options_free(&opts); return 1; }
         if (parse_hostspec(argv[2], host, sizeof(host), idx_host, sizeof(idx_host), &idx_port) != 0) {
             fprintf(stderr, "hpm: invalid spec '%s' (expected host@index:port)\n", argv[2]); kc_hpm_options_free(&opts); return 1;
+        }
+        if (!kc_hpm_is_valid_id(host)) {
+            fprintf(stderr, "hpm: invalid host id '%s'\n", host);
+            kc_hpm_options_free(&opts);
+            return 1;
         }
 
         for (int i = 3; i < argc; i++) {

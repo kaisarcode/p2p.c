@@ -102,6 +102,8 @@ void kc_hpm_options_free(kc_hpm_options_t *opts);
 int kc_hpm_open(kc_hpm_t **out);
 int kc_hpm_close(kc_hpm_t *ctx);
 const char *kc_hpm_strerror(int code);
+int kc_hpm_is_valid_id(const char *id);
+int kc_hpm_is_valid_pass_token(const char *pass);
 
 /**
  * INDEX SERVER

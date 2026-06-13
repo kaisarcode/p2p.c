@@ -50,6 +50,9 @@ kc_test_cli() {
     if "$BIN" > /dev/null 2>&1; then kc_test_fail "cli: no args should fail"; return 1; fi
     if "$BIN" set foo@127.0.0.1:1 > /dev/null 2>&1; then kc_test_fail "cli: set without protocol should fail"; return 1; fi
     if "$BIN" con foo@127.0.0.1:1 > /dev/null 2>&1; then kc_test_fail "cli: con without protocol should fail"; return 1; fi
+    if "$BIN" set 'bad:id@127.0.0.1:1' --tcp 1 > /dev/null 2>&1; then kc_test_fail "cli: invalid set id should fail"; return 1; fi
+    if "$BIN" con 'bad@id@127.0.0.1:1' --tcp 1 > /dev/null 2>&1; then kc_test_fail "cli: invalid con id should fail"; return 1; fi
+    if "$BIN" del 'bad:id@127.0.0.1:1' > /dev/null 2>&1; then kc_test_fail "cli: invalid del id should fail"; return 1; fi
     kc_test_pass "cli"; return 0
 }
 
@@ -93,6 +96,7 @@ kc_test_index_start() {
 # @param $6 Backend port for VIP success case.
 # @param $7 Backend port for VIP wrong password case.
 # @param $8 Backend port for global fallback case.
+# @param $9 Protected index port for invalid VIP id case.
 # @return 0 on success, 1 on failure.
 kc_test_vip_register() {
     vip_port_ok=$1
@@ -103,6 +107,7 @@ kc_test_vip_register() {
     vip_backend_ok=$6
     vip_backend_bad=$7
     vip_backend_global=$8
+    vip_port_invalid=$9
     vip_text='vipseat vip-pass admin-seat admin-pass'
 
     kc_test_index_start "$vip_port_ok" 0 global vip-ok "$vip_text" || return 1
@@ -141,6 +146,13 @@ kc_test_vip_register() {
         return 1
     fi
     kc_test_pass "vip-dup"
+
+    if HPM_PASS=global HPM_VIP='bad:id nope' "$BIN" idx "$vip_port_invalid" > "$TMP_ROOT/vip-invalid.log" 2>&1; then
+        kc_test_fail "vip-invalid-id"
+        return 1
+    fi
+    kc_test_pass "vip-invalid-id"
+
     kc_test_pass "vip-register"
     return 0
 }
@@ -730,6 +742,7 @@ kc_test_main() {
     vip_port_3=$((PORT_BASE + 9))
     vip_port_4=$((PORT_BASE + 23))
     vip_port_5=$((PORT_BASE + 24))
+    vip_port_6=$((PORT_BASE + 28))
     auth_backend_1=$((PORT_BASE + 13))
     auth_backend_2=$((PORT_BASE + 14))
     auth_backend_3=$((PORT_BASE + 15))
@@ -761,7 +774,7 @@ kc_test_main() {
         "$auth_backend_4" "$auth_backend_1" "$auth_listen_1" || return 1
     kc_test_vip_register "$vip_port_1" "$vip_port_2" "$vip_port_3" \
         "$vip_port_4" "$vip_port_5" "$vip_backend_1" "$vip_backend_2" \
-        "$vip_backend_3" || return 1
+        "$vip_backend_3" "$vip_port_6" || return 1
     return 0
 }
 

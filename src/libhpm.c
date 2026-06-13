@@ -2341,6 +2341,39 @@ static int kc_hpm_is_space(char ch) {
 }
 
 /**
+ * Returns whether the identifier contains only protocol-safe characters.
+ * @param id Identifier to validate.
+ * @return 1 when valid, 0 otherwise.
+ */
+int kc_hpm_is_valid_id(const char *id) {
+    size_t i;
+
+    if (!id || !id[0]) return 0;
+    for (i = 0; id[i]; i++) {
+        if (i >= KC_HPM_ID_MAX) return 0;
+        if (kc_hpm_is_space(id[i])) return 0;
+        if (id[i] == '@' || id[i] == ':') return 0;
+    }
+    return 1;
+}
+
+/**
+ * Returns whether the password token contains no whitespace.
+ * @param pass Password token to validate.
+ * @return 1 when valid, 0 otherwise.
+ */
+int kc_hpm_is_valid_pass_token(const char *pass) {
+    size_t i;
+
+    if (!pass || !pass[0]) return 0;
+    for (i = 0; pass[i]; i++) {
+        if (i >= KC_HPM_PASS_MAX) return 0;
+        if (kc_hpm_is_space(pass[i])) return 0;
+    }
+    return 1;
+}
+
+/**
  * Trims leading and trailing ASCII whitespace in place.
  * @param text Mutable string buffer.
  * @return Pointer to the first non-whitespace byte.
@@ -2388,6 +2421,16 @@ static int kc_hpm_add_vip(kc_hpm_t *ctx, const char *id, const char *pass,
     int cap;
 
     if (!ctx || !id || !pass) return KC_HPM_ERROR;
+    if (!kc_hpm_is_valid_id(id)) {
+        if (err && err_cap > 0)
+            snprintf(err, err_cap, "HPM_VIP invalid id '%s'", id);
+        return KC_HPM_ERROR;
+    }
+    if (!kc_hpm_is_valid_pass_token(pass)) {
+        if (err && err_cap > 0)
+            snprintf(err, err_cap, "HPM_VIP invalid password for id '%s'", id);
+        return KC_HPM_ERROR;
+    }
     if (kc_hpm_find_vip(ctx, id) >= 0) {
         if (err && err_cap > 0)
             snprintf(err, err_cap, "HPM_VIP redefines reserved id '%s'", id);
@@ -3703,6 +3746,10 @@ int kc_hpm_serve_index(
                                 if (rlen > KC_HPM_ID_MAX) rlen = KC_HPM_ID_MAX;
                                 memcpy(id, rstart, rlen);
                                 id[rlen] = '\0';
+                            }
+                            if (!kc_hpm_is_valid_id(id)) {
+                                kc_hpm_tcp_send(c->fd, "ERROR:invalid id");
+                                continue;
                             }
 
                             if (strstr(cmd_buf, "SOLUTION:") != NULL) {

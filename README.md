@@ -41,6 +41,23 @@ admin adminpass' \
 hpm idx 9876
 ```
 
+Load the same VIP seat map from a text file:
+
+```bash
+HPM_PASS='global' \
+HPM_VIP="$(cat ./vip.txt)" \
+hpm idx 9876
+```
+
+With `vip.txt` containing whitespace-separated `<id> <pass>` pairs:
+
+```text
+web webpass
+admin adminpass
+
+game gamepass
+```
+
 Publish a local TCP service on `127.0.0.1:8080`:
 
 ```bash
@@ -140,6 +157,10 @@ It is **not** a system username, and the index does **not** create user accounts
 If nobody has announced `game`, then `hpm con game@idx.example.com:9876` fails with `NOT_FOUND`.
 The form `game@idx.example.com` is **not** a URL; you cannot open it in a browser, ping it, or connect to it directly.
 It only has meaning inside hpm commands to refer to a registered host on a specific index.
+
+IDs cannot contain whitespace, `@`, or `:` because those characters conflict with the CLI and wire syntax. Password tokens used by `HPM_PASS` and `HPM_VIP` cannot contain whitespace.
+
+`HPM_VIP` is parsed as whitespace-separated `<id> <pass>` pairs, so spaces, tabs, newlines, and blank lines are all treated the same after trimming the full string.
 
 ### How the tunnel works
 
@@ -280,6 +301,7 @@ hpm idx 9876                      # PoW 0 bits (default)
 hpm idx 9876 --pow 20             # PoW 20 bits
 HPM_PASS='password' hpm idx 9876
 HPM_PASS='password' hpm idx 9876 --pow 20
+HPM_PASS='global' HPM_VIP='web webpass admin adminpass' hpm idx 9876
 ```
 
 ### Environment
@@ -302,6 +324,16 @@ Internal debug-only environment knobs used for fault-injection tests:
 `HPM_INDEX` and `HPM_BIND` are parsed by the options loader internally, but the current CLI still requires explicit positional arguments for the index address and explicit command flags for bind behavior.
 
 When `HPM_VIP` defines a password for one seat, that seat must use its VIP password and no longer accepts the global `HPM_PASS`. Seats not listed in `HPM_VIP` still use the global `HPM_PASS`.
+If `HPM_VIP` repeats an ID or contains an invalid ID/password token, `hpm idx` fails at startup.
+
+Examples:
+
+```bash
+HPM_PASS='global' HPM_VIP='web webpass' hpm idx 9876
+
+HPM_PASS='webpass' hpm set web@idx.example.com:9876 --tcp 8080
+HPM_PASS='global' hpm set blog@idx.example.com:9876 --tcp 8080
+```
 
 ### API
 

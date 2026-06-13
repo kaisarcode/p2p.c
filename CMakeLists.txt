@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 cmake_minimum_required(VERSION 3.14)
-project(hpm VERSION 1.2.0 LANGUAGES C)
+project(hpm VERSION 1.0.1 LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
 
 if(NOT MSVC)
