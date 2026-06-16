@@ -28,8 +28,6 @@
 #include <sys/stat.h>
 #endif
 
-#define KC_HPM_VERSION "1.0.1"
-
 extern volatile sig_atomic_t kc_hpm_stop_requested;
 
 /**
@@ -150,7 +148,11 @@ int main(int argc, char **argv) {
 
     if (argc < 2) { print_help(argv[0]); return 1; }
     if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) { print_help(argv[0]); return 0; }
-    if (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0) { printf("hpm %s\n", KC_HPM_VERSION); return 0; }
+    if (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0) {
+        printf("hpm build %llu\n",
+            (unsigned long long)kc_hpm_version());
+        return 0;
+    }
 
     if (strcmp(argv[1], "idx") == 0) {
         kc_hpm_options_t opts;

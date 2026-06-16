@@ -3,8 +3,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 cmake_minimum_required(VERSION 3.14)
-project(hpm VERSION 1.0.1 LANGUAGES C)
+project(hpm LANGUAGES C)
 set(CMAKE_C_STANDARD 11)
+
+if(NOT DEFINED HPM_BUILD_VERSION)
+    set(HPM_BUILD_VERSION 0)
+endif()
 
 if(NOT MSVC)
     add_compile_options(-O3 -Wall -Wextra -Werror)
@@ -16,7 +20,12 @@ endif()
 # Shared library (for external use)
 set(HPM_SOURCES
     src/libhpm.c
+    src/version.c
     lib/monocypher/monocypher.c
+)
+
+set_source_files_properties(src/version.c PROPERTIES
+    COMPILE_DEFINITIONS KC_HPM_BUILD_VERSION=${HPM_BUILD_VERSION}
 )
 
 add_library(hpm_shared SHARED ${HPM_SOURCES})

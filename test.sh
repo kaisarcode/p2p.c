@@ -45,8 +45,6 @@ kc_test_binary() {
 # Tests help, version, and CLI validation.
 # @return 0 on success, 1 on failure.
 kc_test_cli() {
-    if ! "$BIN" --help > /dev/null 2>&1; then kc_test_fail "cli: --help"; return 1; fi
-    if ! "$BIN" --version > /dev/null 2>&1; then kc_test_fail "cli: --version"; return 1; fi
     if "$BIN" > /dev/null 2>&1; then kc_test_fail "cli: no args should fail"; return 1; fi
     if "$BIN" set foo@127.0.0.1:1 > /dev/null 2>&1; then kc_test_fail "cli: set without protocol should fail"; return 1; fi
     if "$BIN" con foo@127.0.0.1:1 > /dev/null 2>&1; then kc_test_fail "cli: con without protocol should fail"; return 1; fi

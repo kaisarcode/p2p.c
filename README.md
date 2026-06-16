@@ -146,7 +146,7 @@ printf 'ping' | socat - TCP:127.0.0.1:9000
 | `con <host>@<index[:port]> --tcp <port> [--sweep <n>] [--stun <url>]` | Expose one remote TCP service on `127.0.0.1:<port>`. |
 | `con <host>@<index[:port]> --udp <port> [--sweep <n>] [--stun <url>]` | Expose one remote UDP service on `127.0.0.1:<port>`. |
 | `-h`, `--help` | Show help and usage. |
-| `-v`, `--version` | Show version. |
+| `-v`, `--version` | Show build version. |
 
 ---
 
