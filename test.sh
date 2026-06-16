@@ -868,5 +868,7 @@ kc_test_main() {
 
 trap 'status=$?; pkill -9 -P $$ 2>/dev/null || true; pkill -9 -f "bin/x86_64/linux/hpm" 2>/dev/null || true; rm -rf "$TMP_ROOT"; exit "${status:-0}"' EXIT INT HUP TERM
 
-kc_test_main
-exit $FAIL
+if kc_test_main; then
+    exit 0
+fi
+exit 1
