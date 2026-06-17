@@ -2370,7 +2370,7 @@ static int kc_hpm_is_space(char ch) {
 }
 
 /**
- * Returns whether the identifier contains only protocol-safe characters.
+ * Returns whether the identifier contains only alphanumeric characters.
  * @param id Identifier to validate.
  * @return 1 when valid, 0 otherwise.
  */
@@ -2380,8 +2380,10 @@ int kc_hpm_is_valid_id(const char *id) {
     if (!id || !id[0]) return 0;
     for (i = 0; id[i]; i++) {
         if (i >= KC_HPM_ID_MAX) return 0;
-        if (kc_hpm_is_space(id[i])) return 0;
-        if (id[i] == '@' || id[i] == ':') return 0;
+        if (!((id[i] >= 'a' && id[i] <= 'z') ||
+            (id[i] >= 'A' && id[i] <= 'Z') ||
+            (id[i] >= '0' && id[i] <= '9')))
+            return 0;
     }
     return 1;
 }

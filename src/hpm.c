@@ -132,7 +132,7 @@ static void print_help(const char *name) {
     printf("  HPM_VIP                Reserved seat passwords as '<id> <pass> ...'\n");
     printf("  HPM_SWEEP              UDP port sweep range used during punch fallback\n");
     printf("  HPM_STUN               Optional STUN URL (stun:host:port)\n");
-    printf("  IDs cannot contain whitespace, '@', or ':'\n");
+    printf("  IDs may use only A-Z a-z 0-9\n");
     printf("  Passwords may use A-Z a-z 0-9 . _ - + = , : @ %% /\n");
 }
 

@@ -158,7 +158,7 @@ If nobody has announced `game`, then `hpm con game@idx.example.com:9876` fails w
 The form `game@idx.example.com` is **not** a URL; you cannot open it in a browser, ping it, or connect to it directly.
 It only has meaning inside hpm commands to refer to a registered host on a specific index.
 
-IDs cannot contain whitespace, `@`, or `:` because those characters conflict with the CLI and wire syntax. Password tokens used by `HPM_PASS` and `HPM_VIP` are restricted to terminal-safe bytes: letters, digits, and `._-+=,:@%/`.
+IDs may contain only ASCII letters and digits (`A-Z`, `a-z`, `0-9`). Password tokens used by `HPM_PASS` and `HPM_VIP` are restricted to terminal-safe bytes: letters, digits, and `._-+=,:@%/`.
 
 `HPM_VIP` is parsed as whitespace-separated `<id> <pass>` pairs, so spaces, tabs, newlines, and blank lines are all treated the same after trimming the full string.
 

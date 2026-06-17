@@ -51,6 +51,8 @@ kc_test_cli() {
     if "$BIN" set 'bad:id@127.0.0.1:1' --tcp 1 > /dev/null 2>&1; then kc_test_fail "cli: invalid set id should fail"; return 1; fi
     if "$BIN" con 'bad@id@127.0.0.1:1' --tcp 1 > /dev/null 2>&1; then kc_test_fail "cli: invalid con id should fail"; return 1; fi
     if "$BIN" del 'bad:id@127.0.0.1:1' > /dev/null 2>&1; then kc_test_fail "cli: invalid del id should fail"; return 1; fi
+    if "$BIN" set 'bad-id@127.0.0.1:1' --tcp 1 > /dev/null 2>&1; then kc_test_fail "cli: non-alnum set id should fail"; return 1; fi
+    if "$BIN" con 'bad_id@127.0.0.1:1' --tcp 1 > /dev/null 2>&1; then kc_test_fail "cli: non-alnum con id should fail"; return 1; fi
     if HPM_PASS='bad`tick' "$BIN" set foo@127.0.0.1:1 --tcp 1 > /dev/null 2>&1; then kc_test_fail "cli: invalid HPM_PASS should fail"; return 1; fi
     kc_test_pass "cli"; return 0
 }
@@ -107,7 +109,7 @@ kc_test_vip_register() {
     vip_backend_bad=$7
     vip_backend_global=$8
     vip_port_invalid=$9
-    vip_text='vipseat vip-pass admin-seat admin-pass'
+    vip_text='vipseat vip-pass adminseat admin-pass'
 
     kc_test_index_start "$vip_port_ok" 0 global vip-ok "$vip_text" || return 1
     kc_test_set_tcp "$vip_port_ok" vipseat "$vip_backend_ok" vip-pass || return 1
