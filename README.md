@@ -417,6 +417,18 @@ make loongarch64/linux
 
 ---
 
+## Project scope
+
+libkcp2p.c is built around a small and specific goal: coordinate peers, establish a direct connection between them, and keep third-party infrastructure outside the application data path.
+
+Its surface is intentionally limited. There is no large collection of modules to evaluate, no set of interchangeable networking stacks to assemble, and no need to become an expert in a complete ecosystem before establishing a connection. The API exposes a small set of operations, the connection flow is concrete, and the implementation can be inspected directly.
+
+A well-known project in the broader peer-to-peer networking space is [libp2p](https://libp2p.io/). It is an established modular stack designed to support many kinds of P2P systems through a broad collection of transports, secure channels, stream multiplexers, discovery and routing mechanisms, NAT traversal protocols, relays, and other components.
+
+libkcp2p.c does not attempt to replace libp2p or reproduce its scope. Applications that need a general, extensible, and interoperable P2P networking platform may be better served by libp2p. libkcp2p.c is intended for applications that need direct peer connectivity through a smaller component with fewer concepts, fewer decisions, and a shorter learning curve.
+
+---
+
 ## Beta Notice
 
 This is a beta project tested only on Debian x86_64. It was created out of a personal need for these libraries, but no guarantees are provided regarding its stability or future support. You are free to test it, use it, and modify it as you please.
