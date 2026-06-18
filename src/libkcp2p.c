@@ -94,6 +94,9 @@ typedef int kc_p2p_fd_t;
 #define KC_P2P_STREAM_HELLO_MS   500
 #define KC_P2P_STREAM_IDLE_MS    20000
 #define KC_P2P_STREAM_MAX_RETRIES 12
+#define KC_P2P_CTRL_LINE_MAX     1024
+#define KC_P2P_CTRL_FIELD_MAX     256
+#define KC_P2P_CTRL_SESSION_MAX    63
 
 #define KC_P2P_STREAM_TYPE_HELLO     1u
 #define KC_P2P_STREAM_TYPE_HELLO_ACK 2u
@@ -3283,6 +3286,216 @@ static void kc_p2p_pending_punch_evict_stale(kc_p2p_t *ctx) {
 }
 
 /**
+ * Appends text to a bounded output buffer.
+ * @param out Output buffer.
+ * @param cap Output buffer capacity.
+ * @param text Text to append.
+ * @return 1 on success, 0 on overflow.
+ */
+static int kc_p2p_append_text(char *out, size_t cap, const char *text) {
+    size_t used;
+    size_t add;
+
+    if (!out || !text || cap == 0) return 0;
+    used = strlen(out);
+    add = strlen(text);
+    if (used >= cap || add >= cap - used) return 0;
+    memcpy(out + used, text, add + 1);
+    return 1;
+}
+
+/**
+ * Copies one colon-delimited field from a cursor.
+ * @param cursor Input cursor updated after the field.
+ * @param out    Output field buffer.
+ * @param cap    Output field capacity.
+ * @param delim  Required delimiter or NUL for final field.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_field(const char **cursor, char *out, size_t cap,
+    char delim)
+{
+    const char *start;
+    const char *end;
+    size_t len;
+
+    if (!cursor || !*cursor || !out || cap == 0) return 0;
+    start = *cursor;
+    end = delim ? strchr(start, delim) : start + strlen(start);
+    if (!end) return 0;
+    len = (size_t)(end - start);
+    if (len == 0 || len >= cap) return 0;
+    memcpy(out, start, len);
+    out[len] = '\0';
+    *cursor = delim ? end + 1 : end;
+    return 1;
+}
+
+/**
+ * Reports whether a token is lowercase or uppercase hexadecimal.
+ * @param text Input token.
+ * @param len  Required token length.
+ * @return 1 when valid, 0 otherwise.
+ */
+static int kc_p2p_is_hex_token(const char *text, size_t len) {
+    size_t i;
+
+    if (!text || strlen(text) != len) return 0;
+    for (i = 0; i < len; i++) {
+        if ((text[i] >= '0' && text[i] <= '9') ||
+            (text[i] >= 'a' && text[i] <= 'f') ||
+            (text[i] >= 'A' && text[i] <= 'F'))
+            continue;
+        return 0;
+    }
+    return 1;
+}
+
+/**
+ * Reports whether a session token is bounded and alphanumeric.
+ * @param text Input token.
+ * @return 1 when valid, 0 otherwise.
+ */
+static int kc_p2p_is_session_token(const char *text) {
+    size_t i;
+
+    if (!text || !text[0]) return 0;
+    for (i = 0; text[i]; i++) {
+        if (i >= KC_P2P_CTRL_SESSION_MAX) return 0;
+        if (!((text[i] >= 'a' && text[i] <= 'z') ||
+            (text[i] >= 'A' && text[i] <= 'Z') ||
+            (text[i] >= '0' && text[i] <= '9')))
+            return 0;
+    }
+    return 1;
+}
+
+/**
+ * Reports whether a transient punch id is bounded and safe.
+ * @param text Input token.
+ * @return 1 when valid, 0 otherwise.
+ */
+static int kc_p2p_is_punch_id(const char *text) {
+    size_t i;
+
+    if (!text || !text[0]) return 0;
+    for (i = 0; text[i]; i++) {
+        if (i >= KC_P2P_ID_MAX) return 0;
+        if (!((text[i] >= 'a' && text[i] <= 'z') ||
+            (text[i] >= 'A' && text[i] <= 'Z') ||
+            (text[i] >= '0' && text[i] <= '9') || text[i] == '-'))
+            return 0;
+    }
+    return 1;
+}
+
+/**
+ * Parses one strict decimal TCP or UDP port.
+ * @param text Input token.
+ * @param port Output port.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_port_token(const char *text, unsigned short *port) {
+    unsigned long value;
+    char *end;
+
+    if (!text || !text[0] || !port) return 0;
+    if (text[0] == '-' || text[0] == '+') return 0;
+    value = strtoul(text, &end, 10);
+    if (*end != '\0' || value == 0 || value > 65535) return 0;
+    *port = (unsigned short)value;
+    return 1;
+}
+
+/**
+ * Maps one candidate type token to an internal type.
+ * @param text Input candidate type token.
+ * @param type Output candidate type.
+ * @return 1 on success, 0 on unknown type.
+ */
+static int kc_p2p_parse_candidate_type(const char *text,
+    kc_p2p_candidate_type_t *type)
+{
+    if (!text || !type) return 0;
+    if (strcmp(text, "host") == 0) *type = KC_P2P_CAND_HOST;
+    else if (strcmp(text, "lan") == 0) *type = KC_P2P_CAND_LAN;
+    else if (strcmp(text, "public") == 0) *type = KC_P2P_CAND_PUBLIC;
+    else if (strcmp(text, "srflx") == 0) *type = KC_P2P_CAND_SRFLX;
+    else return 0;
+    return 1;
+}
+
+/**
+ * Returns the textual name for one local candidate type.
+ * @param type Candidate type.
+ * @return Candidate type name.
+ */
+static const char *kc_p2p_candidate_type_name(kc_p2p_candidate_type_t type) {
+    if (type == KC_P2P_CAND_LAN) return "lan";
+    if (type == KC_P2P_CAND_PUBLIC) return "public";
+    if (type == KC_P2P_CAND_SRFLX) return "srflx";
+    return "host";
+}
+
+/**
+ * Parses one strict candidate line.
+ * @param line Input line.
+ * @param out  Output candidate.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_candidate_line(const char *line,
+    kc_p2p_candidate_t *out)
+{
+    const char *cursor;
+    char type_text[16];
+    char addr[KC_P2P_ADDR_MAX + 1];
+    char port_text[8];
+    struct in_addr ipv4;
+
+    if (!line || !out || strncmp(line, "CAND:", 5) != 0) return 0;
+    cursor = line + 5;
+    if (!kc_p2p_parse_field(&cursor, type_text, sizeof(type_text), ':'))
+        return 0;
+    if (!kc_p2p_parse_field(&cursor, addr, sizeof(addr), ':'))
+        return 0;
+    if (!kc_p2p_parse_field(&cursor, port_text, sizeof(port_text), '\0'))
+        return 0;
+    if (*cursor != '\0') return 0;
+    if (!kc_p2p_parse_candidate_type(type_text, &out->type)) return 0;
+    if (inet_pton(AF_INET, addr, &ipv4) != 1) return 0;
+    if (!kc_p2p_parse_port_token(port_text, &out->port)) return 0;
+    snprintf(out->addr, sizeof(out->addr), "%s", addr);
+    out->priority = 0;
+    return 1;
+}
+
+/**
+ * Finds a complete END-framed block after the current line.
+ * @param start First byte after the command line.
+ * @param limit One byte past available buffered data.
+ * @param end   Output pointer after END line.
+ * @return 1 when END is present, 0 otherwise.
+ */
+static int kc_p2p_find_end_line(char *start, char *limit, char **end) {
+    char *cursor;
+    char *newline;
+
+    if (!start || !limit || !end) return 0;
+    cursor = start;
+    while (cursor < limit &&
+        (newline = (char *)memchr(cursor, '\n', (size_t)(limit - cursor))) != NULL)
+    {
+        size_t len = (size_t)(newline - cursor);
+        if (len == 3 && memcmp(cursor, "END", 3) == 0) {
+            *end = newline + 1;
+            return 1;
+        }
+        cursor = newline + 1;
+    }
+    return 0;
+}
+
+/**
  * serve index.
  * @return 0 on success, -1 on error.
  */
@@ -3298,29 +3511,386 @@ static void kc_p2p_pending_punch_evict_stale(kc_p2p_t *ctx) {
  * @param buf       Input buffer.
  * @param out       Output array.
  * @param out_count Output count.
- * @return None.
+ * @return 1 on success, 0 on malformed input.
  */
-static void kc_p2p_parse_remote_candidates(const char *buf, kc_p2p_candidate_t *out, int *out_count) {
-    (void)buf;
+static int kc_p2p_parse_remote_candidates(const char *buf,
+    kc_p2p_candidate_t *out, int *out_count)
+{
+    const char *p;
+
+    if (!buf || !out || !out_count) return 0;
     *out_count = 0;
-    const char *p = buf;
-    while (p && *p) {
-        char *nl = strchr(p, '\n');
-        if (nl) *nl = '\0';
-        if (strncmp(p, "CAND:", 5) == 0 && *out_count < KC_P2P_CANDIDATES_MAX) {
-            char ctype[16];
-            kc_p2p_candidate_t *c = &out[*out_count];
-            if (sscanf(p, "CAND:%15[^:]:%47[^:]:%hu", ctype, c->addr, &c->port) == 3) {
-                if (strcmp(ctype, "host") == 0) c->type = KC_P2P_CAND_HOST;
-                else if (strcmp(ctype, "lan") == 0) c->type = KC_P2P_CAND_LAN;
-                else if (strcmp(ctype, "public") == 0) c->type = KC_P2P_CAND_PUBLIC;
-                else if (strcmp(ctype, "srflx") == 0) c->type = KC_P2P_CAND_SRFLX;
-                else c->type = KC_P2P_CAND_HOST;
-                (*out_count)++;
-            }
-        }
-        if (nl) { *nl = '\n'; p = nl + 1; } else break;
+    p = buf;
+    if (strncmp(p, "PUNCH_", 6) == 0) {
+        p = strchr(p, '\n');
+        if (!p) return 0;
+        p++;
     }
+    while (p && *p) {
+        const char *nl = strchr(p, '\n');
+        char line[128];
+        size_t len;
+
+        if (!nl) return 0;
+        len = (size_t)(nl - p);
+        if (len == 0) return 0;
+        if (len == 3 && memcmp(p, "END", 3) == 0) return 1;
+        if (len >= sizeof(line)) return 0;
+        memcpy(line, p, len);
+        line[len] = '\0';
+        if (strncmp(line, "CAND:", 5) != 0) return 0;
+        if (*out_count >= KC_P2P_CANDIDATES_MAX) return 0;
+        if (!kc_p2p_parse_candidate_line(line, &out[*out_count])) return 0;
+        (*out_count)++;
+        p = nl + 1;
+    }
+    return 0;
+}
+
+/**
+ * Appends one validated candidate line to a control message.
+ * @param msg  Output message buffer.
+ * @param cap  Output message capacity.
+ * @param line Candidate line.
+ * @return 1 on success, 0 on malformed input or overflow.
+ */
+static int kc_p2p_append_candidate_line(char *msg, size_t cap,
+    const char *line)
+{
+    kc_p2p_candidate_t candidate;
+
+    if (!kc_p2p_parse_candidate_line(line, &candidate)) return 0;
+    if (!kc_p2p_append_text(msg, cap, line)) return 0;
+    if (!kc_p2p_append_text(msg, cap, "\n")) return 0;
+    return 1;
+}
+
+/**
+ * Appends a bounded local candidate line.
+ * @param msg       Output message buffer.
+ * @param cap       Output message capacity.
+ * @param candidate Candidate to append.
+ * @return 1 on success, 0 on overflow.
+ */
+static int kc_p2p_append_candidate(char *msg, size_t cap,
+    const kc_p2p_candidate_t *candidate)
+{
+    char cbuf[128];
+    int n;
+
+    if (!candidate) return 0;
+    n = snprintf(cbuf, sizeof(cbuf), "CAND:%s:%s:%u\n",
+        kc_p2p_candidate_type_name(candidate->type), candidate->addr,
+        candidate->port);
+    if (n < 0 || (size_t)n >= sizeof(cbuf)) return 0;
+    return kc_p2p_append_text(msg, cap, cbuf);
+}
+
+/**
+ * Copies validated CAND lines from one complete END-framed block.
+ * @param cursor Input cursor after the command line.
+ * @param end    One byte after END line.
+ * @param msg    Output control message.
+ * @param cap    Output control message capacity.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_copy_candidate_block(char *cursor, char *end, char *msg,
+    size_t cap)
+{
+    while (cursor < end) {
+        char *newline = (char *)memchr(cursor, '\n', (size_t)(end - cursor));
+        char line[128];
+        size_t len;
+
+        if (!newline) return 0;
+        len = (size_t)(newline - cursor);
+        if (len == 3 && memcmp(cursor, "END", 3) == 0) {
+            return kc_p2p_append_text(msg, cap, "END\n");
+        }
+        if (len == 0 || len >= sizeof(line)) return 0;
+        memcpy(line, cursor, len);
+        line[len] = '\0';
+        if (!kc_p2p_append_candidate_line(msg, cap, line)) return 0;
+        cursor = newline + 1;
+    }
+    return 0;
+}
+
+/**
+ * Parses a REGISTER command without proof material.
+ * @param line Input command line.
+ * @param id   Output service id.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_register_id(const char *line,
+    char id[KC_P2P_ID_MAX + 1])
+{
+    const char *cursor;
+
+    if (!line || strncmp(line, "REGISTER:", 9) != 0) return 0;
+    cursor = line + 9;
+    if (!kc_p2p_parse_field(&cursor, id, KC_P2P_ID_MAX + 1, '\0'))
+        return 0;
+    if (*cursor != '\0') return 0;
+    return kc_p2p_is_valid_id(id);
+}
+
+/**
+ * Parses a REGISTER proof command.
+ * @param line     Input command line.
+ * @param id       Output service id.
+ * @param solution Output solution token.
+ * @param proof    Output proof token.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_register_solution(const char *line,
+    char id[KC_P2P_ID_MAX + 1], char solution[17], char proof[65])
+{
+    const char *cursor;
+
+    if (!line || strncmp(line, "REGISTER:", 9) != 0) return 0;
+    cursor = line + 9;
+    if (!kc_p2p_parse_field(&cursor, id, KC_P2P_ID_MAX + 1, ':'))
+        return 0;
+    if (strncmp(cursor, "SOLUTION:", 9) != 0) return 0;
+    cursor += 9;
+    if (!kc_p2p_parse_field(&cursor, solution, 17, ':')) return 0;
+    if (strncmp(cursor, "PROOF:", 6) != 0) return 0;
+    cursor += 6;
+    if (!kc_p2p_parse_field(&cursor, proof, 65, '\0')) return 0;
+    if (*cursor != '\0') return 0;
+    if (!kc_p2p_is_valid_id(id)) return 0;
+    if (strlen(solution) == 0 || strlen(solution) > 16) return 0;
+    if (!kc_p2p_is_hex_token(solution, strlen(solution))) return 0;
+    if (!kc_p2p_is_hex_token(proof, 64)) return 0;
+    return 1;
+}
+
+/**
+ * Parses a PUNCH_REQ2 command line.
+ * @param line      Input command line.
+ * @param self_id   Output requester id.
+ * @param target_id Output target id.
+ * @param sess_id   Output session id.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_punch_req2(const char *line,
+    char self_id[KC_P2P_ID_MAX + 1], char target_id[KC_P2P_ID_MAX + 1],
+    char sess_id[KC_P2P_CTRL_SESSION_MAX + 1])
+{
+    const char *cursor;
+
+    if (!line || strncmp(line, "PUNCH_REQ2:", 11) != 0) return 0;
+    cursor = line + 11;
+    if (!kc_p2p_parse_field(&cursor, self_id, KC_P2P_ID_MAX + 1, ':'))
+        return 0;
+    if (!kc_p2p_parse_field(&cursor, target_id, KC_P2P_ID_MAX + 1, ':'))
+        return 0;
+    if (!kc_p2p_parse_field(&cursor, sess_id, KC_P2P_CTRL_SESSION_MAX + 1,
+        '\0'))
+        return 0;
+    if (*cursor != '\0') return 0;
+    return kc_p2p_is_punch_id(self_id) && kc_p2p_is_valid_id(target_id) &&
+        kc_p2p_is_session_token(sess_id);
+}
+
+/**
+ * Parses a PUNCH_ACK2 command line.
+ * @param line      Input command line.
+ * @param self_id   Output publisher id.
+ * @param target_id Output requester id.
+ * @param sess_id   Output session id.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_punch_ack2(const char *line,
+    char self_id[KC_P2P_ID_MAX + 1], char target_id[KC_P2P_ID_MAX + 1],
+    char sess_id[KC_P2P_CTRL_SESSION_MAX + 1])
+{
+    const char *cursor;
+
+    if (!line || strncmp(line, "PUNCH_ACK2:", 11) != 0) return 0;
+    cursor = line + 11;
+    if (!kc_p2p_parse_field(&cursor, self_id, KC_P2P_ID_MAX + 1, ':'))
+        return 0;
+    if (!kc_p2p_parse_field(&cursor, target_id, KC_P2P_ID_MAX + 1, ':'))
+        return 0;
+    if (!kc_p2p_parse_field(&cursor, sess_id, KC_P2P_CTRL_SESSION_MAX + 1,
+        '\0'))
+        return 0;
+    if (*cursor != '\0') return 0;
+    return kc_p2p_is_valid_id(self_id) && kc_p2p_is_punch_id(target_id) &&
+        kc_p2p_is_session_token(sess_id);
+}
+
+/**
+ * Parses a PUNCH_CALL2 command line.
+ * @param line    Input command line.
+ * @param peer_id Output peer id.
+ * @param sess_id Output session id.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_punch_call2(const char *line,
+    char peer_id[KC_P2P_ID_MAX + 1], char sess_id[KC_P2P_CTRL_SESSION_MAX + 1])
+{
+    const char *cursor;
+
+    if (!line || strncmp(line, "PUNCH_CALL2:", 12) != 0) return 0;
+    cursor = line + 12;
+    if (!kc_p2p_parse_field(&cursor, peer_id, KC_P2P_ID_MAX + 1, ':'))
+        return 0;
+    if (!kc_p2p_parse_field(&cursor, sess_id, KC_P2P_CTRL_SESSION_MAX + 1,
+        '\0'))
+        return 0;
+    if (*cursor != '\0') return 0;
+    return kc_p2p_is_punch_id(peer_id) && kc_p2p_is_session_token(sess_id);
+}
+
+/**
+ * Parses a PUNCH_OK2 command line.
+ * @param line    Input command line.
+ * @param peer_id Output peer id.
+ * @param sess_id Output session id.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_punch_ok2(const char *line,
+    char peer_id[KC_P2P_ID_MAX + 1], char sess_id[KC_P2P_CTRL_SESSION_MAX + 1])
+{
+    const char *cursor;
+
+    if (!line || strncmp(line, "PUNCH_OK2:", 10) != 0) return 0;
+    cursor = line + 10;
+    if (!kc_p2p_parse_field(&cursor, peer_id, KC_P2P_ID_MAX + 1, ':'))
+        return 0;
+    if (!kc_p2p_parse_field(&cursor, sess_id, KC_P2P_CTRL_SESSION_MAX + 1,
+        '\0'))
+        return 0;
+    if (*cursor != '\0') return 0;
+    return kc_p2p_is_punch_id(peer_id) && kc_p2p_is_session_token(sess_id);
+}
+
+/**
+ * Parses a DEREGISTER command line.
+ * @param line Input command line.
+ * @param id   Output service id.
+ * @param key  Output registration key.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_deregister(const char *line,
+    char id[KC_P2P_ID_MAX + 1], char key[KC_P2P_KEY_STR_SZ])
+{
+    const char *cursor;
+
+    if (!line || strncmp(line, "DEREGISTER:", 11) != 0) return 0;
+    cursor = line + 11;
+    if (!kc_p2p_parse_field(&cursor, id, KC_P2P_ID_MAX + 1, ':')) return 0;
+    if (strncmp(cursor, "KEY:", 4) != 0) return 0;
+    cursor += 4;
+    if (!kc_p2p_parse_field(&cursor, key, KC_P2P_KEY_STR_SZ, '\0'))
+        return 0;
+    if (*cursor != '\0') return 0;
+    return kc_p2p_is_valid_id(id) && kc_p2p_is_hex_token(key, strlen(key));
+}
+
+/**
+ * Parses a LOOKUP command line.
+ * @param line Input command line.
+ * @param id   Output service id.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_lookup(const char *line,
+    char id[KC_P2P_ID_MAX + 1])
+{
+    const char *cursor;
+
+    if (!line || strncmp(line, "LOOKUP:", 7) != 0) return 0;
+    cursor = line + 7;
+    if (!kc_p2p_parse_field(&cursor, id, KC_P2P_ID_MAX + 1, '\0'))
+        return 0;
+    if (*cursor != '\0') return 0;
+    return kc_p2p_is_valid_id(id);
+}
+
+/**
+ * Parses a CHALLENGE response line.
+ * @param line Input response line.
+ * @param nonce Output nonce token.
+ * @param bits Output difficulty bits.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_challenge(const char *line, char nonce[17],
+    unsigned int *bits)
+{
+    const char *cursor;
+    char bits_text[16];
+    unsigned long value;
+    char *end;
+
+    if (!line || !bits || strncmp(line, "CHALLENGE:", 10) != 0) return 0;
+    cursor = line + 10;
+    if (!kc_p2p_parse_field(&cursor, nonce, 17, ':')) return 0;
+    if (!kc_p2p_parse_field(&cursor, bits_text, sizeof(bits_text), '\0'))
+        return 0;
+    if (*cursor != '\0') return 0;
+    if (!kc_p2p_is_hex_token(nonce, 16)) return 0;
+    if (bits_text[0] == '-' || bits_text[0] == '+') return 0;
+    value = strtoul(bits_text, &end, 10);
+    if (*end != '\0' || value > 32) return 0;
+    *bits = (unsigned int)value;
+    return 1;
+}
+
+/**
+ * Parses an OK registration response line.
+ * @param line Input response line.
+ * @param key  Output registration key.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_ok_key(const char *line, char key[KC_P2P_KEY_STR_SZ]) {
+    const char *cursor;
+
+    if (!line || strncmp(line, "OK:KEY:", 7) != 0) return 0;
+    cursor = line + 7;
+    if (!kc_p2p_parse_field(&cursor, key, KC_P2P_KEY_STR_SZ, '\0'))
+        return 0;
+    if (*cursor != '\0') return 0;
+    return kc_p2p_is_hex_token(key, strlen(key));
+}
+
+/**
+ * Parses a UDP punch packet.
+ * @param text     Input packet text.
+ * @param prefix   Required packet prefix.
+ * @param sess_id  Output session id.
+ * @param from_id  Output source id.
+ * @param to_id    Output destination id.
+ * @return 1 on success, 0 on malformed input.
+ */
+static int kc_p2p_parse_punch_packet(const char *text, const char *prefix,
+    char sess_id[KC_P2P_CTRL_SESSION_MAX + 1],
+    char from_id[KC_P2P_ID_MAX + 1], char to_id[KC_P2P_ID_MAX + 1])
+{
+    const char *cursor;
+    size_t prefix_len;
+
+    if (!text || !prefix) return 0;
+    prefix_len = strlen(prefix);
+    if (strncmp(text, prefix, prefix_len) != 0) return 0;
+    cursor = text + prefix_len;
+    if (!kc_p2p_parse_field(&cursor, sess_id, KC_P2P_CTRL_SESSION_MAX + 1,
+        ':'))
+        return 0;
+    if (!kc_p2p_parse_field(&cursor, from_id, KC_P2P_ID_MAX + 1, ':'))
+        return 0;
+    if (!kc_p2p_parse_field(&cursor, to_id, KC_P2P_ID_MAX + 1, '\0'))
+        return 0;
+    if (*cursor != '\0') return 0;
+    while (to_id[0]) {
+        size_t len = strlen(to_id);
+        if (to_id[len - 1] != '\n' && to_id[len - 1] != '\r') break;
+        to_id[len - 1] = '\0';
+    }
+    return kc_p2p_is_session_token(sess_id) && kc_p2p_is_punch_id(from_id) &&
+        kc_p2p_is_punch_id(to_id);
 }
 
 #define KC_P2P_STUN_ATTR_DATA 0x0013
@@ -3617,13 +4187,11 @@ int kc_p2p_punch_select(kc_p2p_t *ctx, int sweep_limit, int udp_fd, const char *
                     int is_pong = 0;
 
                     recv_buf[n] = '\0';
-                    is_pong = sscanf(recv_buf,
-                        "PUNCH_PONG:%63[^:]:%63[^:]:%63s",
-                        rx_sess, rx_from, rx_to) == 3;
+                    is_pong = kc_p2p_parse_punch_packet(recv_buf,
+                        "PUNCH_PONG:", rx_sess, rx_from, rx_to);
                     if (!is_pong) {
-                        is_ping = sscanf(recv_buf,
-                            "PUNCH_PING:%63[^:]:%63[^:]:%63s",
-                            rx_sess, rx_from, rx_to) == 3;
+                        is_ping = kc_p2p_parse_punch_packet(recv_buf,
+                            "PUNCH_PING:", rx_sess, rx_from, rx_to);
                     }
                     if (((is_ping && strcmp(rx_from, to_id) == 0 &&
                         strcmp(rx_to, from_id) == 0) ||
@@ -3688,13 +4256,11 @@ int kc_p2p_punch_select(kc_p2p_t *ctx, int sweep_limit, int udp_fd, const char *
                         int is_pong = 0;
 
                         recv_buf[n] = '\0';
-                        is_pong = sscanf(recv_buf,
-                            "PUNCH_PONG:%63[^:]:%63[^:]:%63s",
-                            rx_sess, rx_from, rx_to) == 3;
+                        is_pong = kc_p2p_parse_punch_packet(recv_buf,
+                            "PUNCH_PONG:", rx_sess, rx_from, rx_to);
                         if (!is_pong) {
-                            is_ping = sscanf(recv_buf,
-                                "PUNCH_PING:%63[^:]:%63[^:]:%63s",
-                                rx_sess, rx_from, rx_to) == 3;
+                            is_ping = kc_p2p_parse_punch_packet(recv_buf,
+                                "PUNCH_PING:", rx_sess, rx_from, rx_to);
                         }
                         if (((is_ping && strcmp(rx_from, to_id) == 0 &&
                             strcmp(rx_to, from_id) == 0) ||
@@ -3831,21 +4397,31 @@ int kc_p2p_serve_index(
                 tmp[nr] = '\0';
 
                 {   int copy = nr;
-                    if (c->buf_len + copy > (int)sizeof(c->buf) - 1)
-                        copy = (int)sizeof(c->buf) - 1 - c->buf_len;
+                    if (c->buf_len + copy > (int)sizeof(c->buf) - 1) {
+                        kc_p2p_conn_remove(ctx, i);
+                        continue;
+                    }
                     if (copy > 0) {
                         memcpy(c->buf + c->buf_len, tmp, copy);
                         c->buf_len += copy;
+                    }
+                    if (c->buf_len >= KC_P2P_CTRL_LINE_MAX &&
+                        !memchr(c->buf, '\n', (size_t)c->buf_len))
+                    {
+                        kc_p2p_conn_remove(ctx, i);
+                        continue;
                     }
                 }
 
                 {
                     char *line_start = c->buf;
                     char *newline;
+                    int fatal_frame = 0;
 
                     while ((newline = (char *)memchr(line_start, '\n',
                         (size_t)(c->buf + c->buf_len - line_start))) != NULL)
                     {
+                        char *line_base = line_start;
                         int line_len = (int)(newline - line_start);
                         char cmd_buf[KC_P2P_BUF];
                         char cmd[32];
@@ -3853,14 +4429,31 @@ int kc_p2p_serve_index(
                         char reply_buf[KC_P2P_BUF];
                         int srv_idx;
 
-                        if (line_len > (int)sizeof(cmd_buf) - 1)
-                            line_len = (int)sizeof(cmd_buf) - 1;
+                        if (line_len <= 0) {
+                            line_start += line_len + 1;
+                            continue;
+                        }
+                        if (line_len > KC_P2P_CTRL_LINE_MAX ||
+                            line_len > (int)sizeof(cmd_buf) - 1)
+                        {
+                            kc_p2p_conn_remove(ctx, i);
+                            fatal_frame = 1;
+                            break;
+                        }
                         memcpy(cmd_buf, line_start, line_len);
                         cmd_buf[line_len] = '\0';
                         line_start += line_len + 1;
 
-                        if (strlen(cmd_buf) == 0) continue;
-                        if (sscanf(cmd_buf, "%31[^:]", cmd) != 1) continue;
+                        {
+                            const char *colon = strchr(cmd_buf, ':');
+                            size_t cmd_len = colon ? (size_t)(colon - cmd_buf) : strlen(cmd_buf);
+                            if (cmd_len == 0 || cmd_len >= sizeof(cmd)) {
+                                kc_p2p_tcp_send(c->fd, "ERROR:malformed");
+                                continue;
+                            }
+                            memcpy(cmd, cmd_buf, cmd_len);
+                            cmd[cmd_len] = '\0';
+                        }
 
                         if (strcmp(cmd, "REGISTER") == 0) {
                             struct sockaddr_in peer_sa;
@@ -3870,32 +4463,21 @@ int kc_p2p_serve_index(
                                 &peer_len) != 0)
                                 memset(&peer_sa, 0, sizeof(peer_sa));
 
+                            if (strstr(cmd_buf, ":SOLUTION:") == NULL &&
+                                !kc_p2p_parse_register_id(cmd_buf, id))
                             {
-                                const char *rstart = cmd_buf + 9;
-                                const char *sol = strstr(rstart, ":SOLUTION:");
-                                const char *rend;
-                                size_t rlen;
-                                rend = sol;
-                                if (!rend) rend = rstart + strlen(rstart);
-                                rlen = rend - rstart;
-                                if (rlen > KC_P2P_ID_MAX) rlen = KC_P2P_ID_MAX;
-                                memcpy(id, rstart, rlen);
-                                id[rlen] = '\0';
-                            }
-                            if (!kc_p2p_is_valid_id(id)) {
                                 kc_p2p_tcp_send(c->fd, "ERROR:invalid id");
                                 continue;
                             }
 
-                            if (strstr(cmd_buf, "SOLUTION:") != NULL) {
+                            if (strstr(cmd_buf, ":SOLUTION:") != NULL) {
                                 char solution[17];
                                 char proof[65];
                                 int cidx;
                                 const char *register_pass;
 
-                                if (sscanf(cmd_buf,
-                                    "REGISTER:%63[^:]:SOLUTION:%16[^:]:PROOF:%64[^\n]",
-                                    id, solution, proof) == 3)
+                                if (kc_p2p_parse_register_solution(cmd_buf, id,
+                                    solution, proof))
                                 {
                                     register_pass = kc_p2p_get_register_pass(ctx, id);
                                     cidx = kc_p2p_find_pow_challenge(ctx, &peer_sa);
@@ -3963,10 +4545,17 @@ int kc_p2p_serve_index(
                         } else if (strcmp(cmd, "PUNCH_REQ2") == 0) {
                             char self_id[KC_P2P_ID_MAX + 1] = {0};
                             char target_id[KC_P2P_ID_MAX + 1] = {0};
-                            char sess_id[64] = {0};
-                            if (sscanf(cmd_buf, "PUNCH_REQ2:%63[^:]:%63[^:]:%63s", self_id, target_id, sess_id) == 3) {
-                                char *nl = strchr(sess_id, '\n'); if (nl) *nl = '\0';
-                                
+                            char sess_id[KC_P2P_CTRL_SESSION_MAX + 1] = {0};
+                            char *block_end;
+
+                            if (!kc_p2p_find_end_line(line_start,
+                                c->buf + c->buf_len, &block_end))
+                            {
+                                line_start = line_base;
+                                break;
+                            }
+                            if (kc_p2p_parse_punch_req2(cmd_buf, self_id,
+                                target_id, sess_id)) {
                                 int target_fd = -1;
                                 for (int j = 0; j < ctx->n_conns; j++) {
                                     if (ctx->conns[j].registered && strcmp(ctx->conns[j].id, target_id) == 0) {
@@ -3974,27 +4563,21 @@ int kc_p2p_serve_index(
                                         break;
                                     }
                                 }
-                                
+
                                 srv_idx = kc_p2p_find_peer(ctx, target_id);
 
                                 if (target_fd != -1 && srv_idx >= 0) {
                                     char msg[KC_P2P_BUF];
                                     snprintf(msg, sizeof(msg), "PUNCH_CALL2:%s:%s\n", self_id, sess_id);
-                                    
-                                    while ((newline = (char *)memchr(line_start, '\n', (size_t)(c->buf + c->buf_len - line_start))) != NULL) {
-                                        int llen = (int)(newline - line_start);
-                                        char lbuf[128];
-                                        if (llen > 127) llen = 127;
-                                        memcpy(lbuf, line_start, llen);
-                                        lbuf[llen] = '\0';
-                                        line_start += llen + 1;
-                                        if (strcmp(lbuf, "END") == 0) break;
-                                        if (strncmp(lbuf, "CAND:", 5) == 0) {
-                                            strncat(msg, lbuf, sizeof(msg) - strlen(msg) - 1);
-                                            strncat(msg, "\n", sizeof(msg) - strlen(msg) - 1);
-                                        }
+
+                                    if (!kc_p2p_copy_candidate_block(line_start,
+                                        block_end, msg, sizeof(msg)))
+                                    {
+                                        kc_p2p_tcp_send(c->fd, "ERROR:malformed");
+                                        line_start = block_end;
+                                        continue;
                                     }
-                                    strncat(msg, "END\n", sizeof(msg) - strlen(msg) - 1);
+                                    line_start = block_end;
                                     kc_p2p_tcp_send(target_fd, msg);
                                     
                                     kc_p2p_pending_punch_evict_stale(ctx);
@@ -4010,42 +4593,50 @@ int kc_p2p_serve_index(
                                     }
                                 } else {
                                     kc_p2p_tcp_send(c->fd, "ERROR:offline");
+                                    line_start = block_end;
                                 }
+                            } else {
+                                kc_p2p_tcp_send(c->fd, "ERROR:malformed");
+                                line_start = block_end;
                             }
-                            
+
                         } else if (strcmp(cmd, "PUNCH_ACK2") == 0) {
                             char ack_self_id[KC_P2P_ID_MAX + 1] = {0};
                             char ack_target_id[KC_P2P_ID_MAX + 1] = {0};
-                            char ack_sess_id[64] = {0};
-                            if (sscanf(cmd_buf, "PUNCH_ACK2:%63[^:]:%63[^:]:%63s", ack_self_id, ack_target_id, ack_sess_id) >= 3) {
-                                char *nl = strchr(ack_sess_id, '\n'); if (nl) *nl = '\0';
+                            char ack_sess_id[KC_P2P_CTRL_SESSION_MAX + 1] = {0};
+                            char *block_end;
+
+                            if (!kc_p2p_find_end_line(line_start,
+                                c->buf + c->buf_len, &block_end))
+                            {
+                                line_start = line_base;
+                                break;
+                            }
+                            if (kc_p2p_parse_punch_ack2(cmd_buf, ack_self_id,
+                                ack_target_id, ack_sess_id)) {
                                 int pp_idx = kc_p2p_pending_punch_find(ctx, ack_self_id, ack_target_id, ack_sess_id);
                                 if (pp_idx >= 0) {
                                     char ok2[KC_P2P_BUF];
                                     snprintf(ok2, sizeof(ok2), "PUNCH_OK2:%s:%s\n", ack_self_id, ack_sess_id);
-                                    while ((newline = (char *)memchr(line_start, '\n', (size_t)(c->buf + c->buf_len - line_start))) != NULL) {
-                                        int llen = (int)(newline - line_start);
-                                        char lbuf[128];
-                                        if (llen > 127) llen = 127;
-                                        memcpy(lbuf, line_start, llen);
-                                        lbuf[llen] = '\0';
-                                        line_start += llen + 1;
-                                        if (strcmp(lbuf, "END") == 0) break;
-                                        if (strncmp(lbuf, "CAND:", 5) == 0) {
-                                            strncat(ok2, lbuf, sizeof(ok2) - strlen(ok2) - 1);
-                                            strncat(ok2, "\n", sizeof(ok2) - strlen(ok2) - 1);
-                                        }
+                                    if (!kc_p2p_copy_candidate_block(line_start,
+                                        block_end, ok2, sizeof(ok2)))
+                                    {
+                                        kc_p2p_tcp_send(c->fd, "ERROR:malformed");
+                                        line_start = block_end;
+                                        continue;
                                     }
-                                    strncat(ok2, "END\n", sizeof(ok2) - strlen(ok2) - 1);
                                     kc_p2p_tcp_send(ctx->pending_punches[pp_idx].consumer_fd, ok2);
                                     kc_p2p_pending_punch_remove(ctx, pp_idx);
                                 }
+                                line_start = block_end;
+                            } else {
+                                kc_p2p_tcp_send(c->fd, "ERROR:malformed");
+                                line_start = block_end;
                             }
                             
                         } else if (strcmp(cmd, "DEREGISTER") == 0) {
                             char dkey[KC_P2P_KEY_STR_SZ];
-                            if (sscanf(cmd_buf, "DEREGISTER:%63[^:]:KEY:%32[^\n]",
-                                id, dkey) == 2) {
+                            if (kc_p2p_parse_deregister(cmd_buf, id, dkey)) {
                                 srv_idx = kc_p2p_find_peer(ctx, id);
                                 if (srv_idx >= 0 && strcmp(ctx->peers[srv_idx].key, dkey) == 0) {
                                     kc_p2p_remove_peer(ctx, id);
@@ -4053,9 +4644,15 @@ int kc_p2p_serve_index(
                                 } else {
                                     kc_p2p_tcp_send(c->fd, "ERROR:invalid key");
                                 }
+                            } else {
+                                kc_p2p_tcp_send(c->fd, "ERROR:malformed");
                             }
 
                         } else if (strcmp(cmd, "LIST") == 0) {
+                            if (strcmp(cmd_buf, "LIST") != 0) {
+                                kc_p2p_tcp_send(c->fd, "ERROR:malformed");
+                                continue;
+                            }
                             kc_p2p_evict_stale(ctx);
                             for (srv_idx = 0; srv_idx < ctx->n_peers; srv_idx++) {
                                 snprintf(reply_buf, sizeof(reply_buf), "PEER:%s",
@@ -4065,7 +4662,7 @@ int kc_p2p_serve_index(
                             kc_p2p_tcp_send(c->fd, "END");
 
                         } else if (strcmp(cmd, "LOOKUP") == 0) {
-                            if (sscanf(cmd_buf, "LOOKUP:%63[^\n]", id) == 1) {
+                            if (kc_p2p_parse_lookup(cmd_buf, id)) {
                                 srv_idx = kc_p2p_find_peer(ctx, id);
                                 if (srv_idx >= 0) {
                                     snprintf(reply_buf, sizeof(reply_buf), "PEER:%s",
@@ -4074,12 +4671,17 @@ int kc_p2p_serve_index(
                                 } else {
                                     kc_p2p_tcp_send(c->fd, "NOT_FOUND");
                                 }
+                            } else {
+                                kc_p2p_tcp_send(c->fd, "ERROR:malformed");
                             }
+                        } else {
+                            kc_p2p_tcp_send(c->fd, "ERROR:unknown command");
                         }
 
                         if (line_start >= c->buf + c->buf_len) break;
                     }
 
+                    if (fatal_frame) continue;
                     if (line_start > c->buf) {
                         int remaining = (int)(c->buf + c->buf_len - line_start);
                         if (remaining > 0)
@@ -4282,7 +4884,7 @@ int kc_p2p_wait(
         char proof[65];
         unsigned int chall_bits;
 
-        if (sscanf(recv_buf, "CHALLENGE:%16[^:]:%u", nonce, &chall_bits) != 2) {
+        if (!kc_p2p_parse_challenge(recv_buf, nonce, &chall_bits)) {
             KC_P2P_FD_CLOSE(control_fd);
             if (!KC_P2P_ISERR(udp_fd)) KC_P2P_FD_CLOSE(udp_fd);
             return KC_P2P_ERROR;
@@ -4312,7 +4914,7 @@ int kc_p2p_wait(
 
     {
         char obs_key[KC_P2P_KEY_STR_SZ];
-        if (sscanf(recv_buf, "OK:KEY:%32[^\n]", obs_key) != 1) {
+        if (!kc_p2p_parse_ok_key(recv_buf, obs_key)) {
             fprintf(stderr, "p2p: registration failed: %s\n", recv_buf);
             KC_P2P_FD_CLOSE(control_fd);
             if (!KC_P2P_ISERR(udp_fd)) KC_P2P_FD_CLOSE(udp_fd);
@@ -4379,14 +4981,14 @@ int kc_p2p_wait(
                     (int)sizeof(recv_buf), 0) > 0)
                 {
                     char conn_id[KC_P2P_ID_MAX + 1];
-                    char remote_token[KC_P2P_ADDR_MAX + 1];
+                    char remote_token[KC_P2P_CTRL_SESSION_MAX + 1];
                     char sess_hex[KC_P2P_STREAM_SESSION_ID_SZ * 2 + 1];
                     unsigned char sess_id[KC_P2P_STREAM_SESSION_ID_SZ];
 
                     memset(sess_hex, 0, sizeof(sess_hex));
 
-                    if (sscanf(recv_buf, "PUNCH_CALL2:%63[^:]:%47s", conn_id,
-                        remote_token) == 2)
+                    if (kc_p2p_parse_punch_call2(recv_buf, conn_id,
+                        remote_token))
                     {
                         if (ctx->proto == KC_P2P_PROTO_TCP) {
                             memcpy(sess_hex, remote_token,
@@ -4398,15 +5000,28 @@ int kc_p2p_wait(
 
                         {
                             char lbuf[128];
+                            int saw_end = 0;
                             while (kc_p2p_tcp_readline(control_fd, lbuf, sizeof(lbuf), 5) > 0) {
-                                strncat(recv_buf, "\n", sizeof(recv_buf) - strlen(recv_buf) - 1);
-                                strncat(recv_buf, lbuf, sizeof(recv_buf) - strlen(recv_buf) - 1);
-                                if (strcmp(lbuf, "END") == 0) break;
+                                if (!kc_p2p_append_text(recv_buf,
+                                    sizeof(recv_buf), "\n") ||
+                                    !kc_p2p_append_text(recv_buf,
+                                        sizeof(recv_buf), lbuf))
+                                    break;
+                                if (strcmp(lbuf, "END") == 0) {
+                                    saw_end = 1;
+                                    break;
+                                }
                             }
+                            if (saw_end && !kc_p2p_append_text(recv_buf,
+                                sizeof(recv_buf), "\n"))
+                                continue;
+                            if (!saw_end) continue;
                         }
                         kc_p2p_candidate_t remote_cands[KC_P2P_CANDIDATES_MAX];
                         int remote_cand_count = 0;
-                        kc_p2p_parse_remote_candidates(recv_buf, remote_cands, &remote_cand_count);
+                        if (!kc_p2p_parse_remote_candidates(recv_buf,
+                            remote_cands, &remote_cand_count))
+                            continue;
                         kc_p2p_candidate_t my_cands[KC_P2P_CANDIDATES_MAX];
                         int my_cand_count = 0;
                         char ack_buf[KC_P2P_BUF];
@@ -4417,16 +5032,13 @@ int kc_p2p_wait(
                         snprintf(ack_buf, sizeof(ack_buf), "PUNCH_ACK2:%s:%s:%s\n",
                             self_id, conn_id, ack_sess);
                         for (int ci = 0; ci < my_cand_count; ci++) {
-                            char cbuf[128];
-                            const char *tname = "host";
-                            if (my_cands[ci].type == KC_P2P_CAND_LAN) tname = "lan";
-                            else if (my_cands[ci].type == KC_P2P_CAND_PUBLIC) tname = "public";
-                            else if (my_cands[ci].type == KC_P2P_CAND_SRFLX) tname = "srflx";
-                            snprintf(cbuf, sizeof(cbuf), "CAND:%s:%s:%u\n",
-                                tname, my_cands[ci].addr, my_cands[ci].port);
-                            strncat(ack_buf, cbuf, sizeof(ack_buf) - strlen(ack_buf) - 1);
+                            if (!kc_p2p_append_candidate(ack_buf,
+                                sizeof(ack_buf), &my_cands[ci]))
+                                continue;
                         }
-                        strncat(ack_buf, "END\n", sizeof(ack_buf) - strlen(ack_buf) - 1);
+                        if (!kc_p2p_append_text(ack_buf, sizeof(ack_buf),
+                            "END\n"))
+                            continue;
                         kc_p2p_tcp_send(control_fd, ack_buf);
                         
                         struct sockaddr_in peer;
@@ -4546,9 +5158,14 @@ int kc_p2p_wait(
                     } else if (strncmp(buf, "PUNCH_PING:", 11) == 0) {
                         char pong[256];
                         char ping_sess[64] = {0}, ping_from[64] = {0}, ping_to[64] = {0};
-                        sscanf(buf, "PUNCH_PING:%63[^:]:%63[^:]:%63s", ping_sess, ping_from, ping_to);
-                        snprintf(pong, sizeof(pong), "PUNCH_PONG:%s:%s:%s", ping_sess, ping_to, ping_from);
-                        sendto(udp_fd, pong, strlen(pong), 0, (const struct sockaddr *)&from, sizeof(from));
+                        if (kc_p2p_parse_punch_packet(buf, "PUNCH_PING:",
+                            ping_sess, ping_from, ping_to))
+                        {
+                            snprintf(pong, sizeof(pong), "PUNCH_PONG:%s:%s:%s",
+                                ping_sess, ping_to, ping_from);
+                            sendto(udp_fd, pong, strlen(pong), 0,
+                                (const struct sockaddr *)&from, sizeof(from));
+                        }
                     } else {
                         int unset = -1;
                         for (i = 0; i < n_sessions; i++) {
@@ -4689,18 +5306,17 @@ static int kc_p2p_send_punch_req_cands(
 {
     char send_buf[KC_P2P_BUF];
     char recv_buf[KC_P2P_BUF];
+    int n;
     
-    snprintf(send_buf, sizeof(send_buf), "PUNCH_REQ2:%s:%s:%s\n", self_id, target_id, session_id ? session_id : "0");
+    n = snprintf(send_buf, sizeof(send_buf), "PUNCH_REQ2:%s:%s:%s\n",
+        self_id, target_id, session_id ? session_id : "0");
+    if (n < 0 || (size_t)n >= sizeof(send_buf)) return KC_P2P_ERROR;
     for (int i = 0; i < cand_count; i++) {
-        char cbuf[128];
-        const char *tname = "host";
-        if (cands[i].type == KC_P2P_CAND_LAN) tname = "lan";
-        else if (cands[i].type == KC_P2P_CAND_PUBLIC) tname = "public";
-        else if (cands[i].type == KC_P2P_CAND_SRFLX) tname = "srflx";
-        snprintf(cbuf, sizeof(cbuf), "CAND:%s:%s:%u\n", tname, cands[i].addr, cands[i].port);
-        strcat(send_buf, cbuf);
+        if (!kc_p2p_append_candidate(send_buf, sizeof(send_buf), &cands[i]))
+            return KC_P2P_ERROR;
     }
-    strcat(send_buf, "END\n");
+    if (!kc_p2p_append_text(send_buf, sizeof(send_buf), "END\n"))
+        return KC_P2P_ERROR;
     
     if (kc_p2p_tcp_send(ctrl_fd, send_buf) != KC_P2P_OK)
         return KC_P2P_ENET;
@@ -4709,12 +5325,26 @@ static int kc_p2p_send_punch_req_cands(
     
     if (strncmp(recv_buf, "PUNCH_OK2:", 10) == 0) {
         char lbuf[128];
+        char ok_id[KC_P2P_ID_MAX + 1];
+        char ok_sess[KC_P2P_CTRL_SESSION_MAX + 1];
+        int saw_end = 0;
+        if (!kc_p2p_parse_punch_ok2(recv_buf, ok_id, ok_sess))
+            return KC_P2P_ERROR;
         while (kc_p2p_tcp_readline(ctrl_fd, lbuf, sizeof(lbuf), 5) > 0) {
-            strncat(recv_buf, "\n", sizeof(recv_buf) - strlen(recv_buf) - 1);
-            strncat(recv_buf, lbuf, sizeof(recv_buf) - strlen(recv_buf) - 1);
-            if (strcmp(lbuf, "END") == 0) break;
+            if (!kc_p2p_append_text(recv_buf, sizeof(recv_buf), "\n") ||
+                !kc_p2p_append_text(recv_buf, sizeof(recv_buf), lbuf))
+                return KC_P2P_ERROR;
+            if (strcmp(lbuf, "END") == 0) {
+                saw_end = 1;
+                break;
+            }
         }
-        kc_p2p_parse_remote_candidates(recv_buf, remote_cands, remote_cand_count);
+        if (saw_end && !kc_p2p_append_text(recv_buf, sizeof(recv_buf), "\n"))
+            return KC_P2P_ERROR;
+        if (!saw_end) return KC_P2P_ERROR;
+        if (!kc_p2p_parse_remote_candidates(recv_buf, remote_cands,
+            remote_cand_count))
+            return KC_P2P_ERROR;
     }
     return KC_P2P_OK;
 }

@@ -245,6 +245,9 @@ kc_test_control_catalog() {
     list_out="$TMP_ROOT/list.out"
     lookup_out="$TMP_ROOT/lookup.out"
     miss_out="$TMP_ROOT/miss.out"
+    bad_lookup_out="$TMP_ROOT/bad-lookup.out"
+    multi_out="$TMP_ROOT/multi.out"
+    bad_punch_out="$TMP_ROOT/bad-punch.out"
 
     kc_test_tcp_start "$backend_port" || return 1
     "$BIN" set control@127.0.0.1:"$port" --tcp "$backend_port" > "$TMP_ROOT/control-set.log" 2>&1 &
@@ -279,6 +282,42 @@ kc_test_control_catalog() {
         kill -9 "$spid" "$HPID" 2>/dev/null
         wait "$spid" "$HPID" 2>/dev/null
         kc_test_fail "control-lookup"
+        return 1
+    fi
+    if ! printf 'LOOKUP:control:extra\n' | nc -w 2 127.0.0.1 "$port" > "$bad_lookup_out" 2>/dev/null; then
+        kill -9 "$spid" "$HPID" 2>/dev/null
+        wait "$spid" "$HPID" 2>/dev/null
+        kc_test_fail "control-bad-lookup"
+        return 1
+    fi
+    if ! grep -q '^ERROR:malformed$' "$bad_lookup_out"; then
+        kill -9 "$spid" "$HPID" 2>/dev/null
+        wait "$spid" "$HPID" 2>/dev/null
+        kc_test_fail "control-bad-lookup"
+        return 1
+    fi
+    if ! printf 'LIST\nLOOKUP:control\n' | nc -w 2 127.0.0.1 "$port" > "$multi_out" 2>/dev/null; then
+        kill -9 "$spid" "$HPID" 2>/dev/null
+        wait "$spid" "$HPID" 2>/dev/null
+        kc_test_fail "control-multi-read"
+        return 1
+    fi
+    if ! grep -q '^PEER:control$' "$multi_out"; then
+        kill -9 "$spid" "$HPID" 2>/dev/null
+        wait "$spid" "$HPID" 2>/dev/null
+        kc_test_fail "control-multi-read"
+        return 1
+    fi
+    if ! printf 'PUNCH_REQ2:c-1:control:abc\nCAND:bad:127.0.0.1:1\nEND\n' | nc -w 2 127.0.0.1 "$port" > "$bad_punch_out" 2>/dev/null; then
+        kill -9 "$spid" "$HPID" 2>/dev/null
+        wait "$spid" "$HPID" 2>/dev/null
+        kc_test_fail "control-bad-candidate"
+        return 1
+    fi
+    if ! grep -q '^ERROR:malformed$' "$bad_punch_out"; then
+        kill -9 "$spid" "$HPID" 2>/dev/null
+        wait "$spid" "$HPID" 2>/dev/null
+        kc_test_fail "control-bad-candidate"
         return 1
     fi
     if ! "$BIN" del control@127.0.0.1:"$port" > "$TMP_ROOT/control-del.log" 2>&1; then
