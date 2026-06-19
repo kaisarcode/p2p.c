@@ -148,10 +148,10 @@ unsigned short bind_port
 
 /**
  * CLIENT: Expose a remote service on a local port.
- * Uses TCP for LOOKUP + PUNCH_REQ2 to the index. For TCP data relay,
- * creates a local TCP listener and uses a direct peer UDP path for the
- * encrypted reliable stream. For UDP data relay, creates a UDP socket
- * and hole-punches directly to the publisher.
+ * Uses TCP for LOOKUP + PUNCH_REQ2 to the index. For TCP stream forwarding
+ * over direct UDP, creates a local TCP listener and uses a direct peer UDP
+ * path for the encrypted reliable stream. For UDP datagram forwarding, creates
+ * a UDP socket and hole-punches directly to the publisher.
  * @return KC_P2P_OK on clean exit, or a negative error code.
  */
 int kc_p2p_connect(

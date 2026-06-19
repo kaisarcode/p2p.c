@@ -1,6 +1,6 @@
 /**
  * libkcp2p.c - KaisarCode P2P.
- * Summary: Core shared library. TCP rendezvous control and direct P2P UDP relay.
+ * Summary: Core shared library. TCP rendezvous control and direct peer transport.
  *
  * Author:  KaisarCode
  * Website: https://kaisarcode.com
@@ -5988,7 +5988,7 @@ int kc_p2p_connect(
     n_sessions = 0;
     cap_sessions = 0;
 
-    fprintf(stderr, "p2p: %s relay on 127.0.0.1:%u for %s\n",
+    fprintf(stderr, "p2p: %s edge adapter on 127.0.0.1:%u for %s\n",
         ctx->proto == KC_P2P_PROTO_TCP ? "tcp" : "udp",
         (unsigned)ctx->bind_port, target_id);
 
