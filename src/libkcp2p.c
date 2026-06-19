@@ -94,6 +94,10 @@ typedef int kc_p2p_fd_t;
 #define KC_P2P_STREAM_HELLO_MS   500
 #define KC_P2P_STREAM_IDLE_MS    20000
 #define KC_P2P_STREAM_MAX_RETRIES 12
+#define KC_P2P_PUNCH_DIRECT_ROUNDS 3
+#define KC_P2P_PUNCH_DIRECT_WAIT_MS 500
+#define KC_P2P_PUNCH_SWEEP_WAIT_MS 20
+#define KC_P2P_PUNCH_TOTAL_MS 4000
 #define KC_P2P_CTRL_LINE_MAX     1024
 #define KC_P2P_CTRL_FIELD_MAX     256
 #define KC_P2P_CTRL_SESSION_MAX    63
@@ -4483,6 +4487,116 @@ static int kc_p2p_candidate_sockaddr(const kc_p2p_candidate_t *candidate,
 }
 
 /**
+ * Sends one punch packet to one candidate endpoint.
+ * @param udp_fd      UDP socket fd.
+ * @param candidate   Candidate endpoint.
+ * @param ping_msg    Punch packet text.
+ * @param unsupported Unsupported candidate counter.
+ * @return 1 when a packet was sent, 0 otherwise.
+ */
+static int kc_p2p_punch_send_candidate(int udp_fd,
+    const kc_p2p_candidate_t *candidate, const char *ping_msg,
+    int *unsupported)
+{
+    struct sockaddr_storage cand_sa;
+    socklen_t cand_len;
+
+    if (!kc_p2p_candidate_sockaddr(candidate, &cand_sa)) {
+        if (unsupported) (*unsupported)++;
+        return 0;
+    }
+    cand_len = kc_p2p_sockaddr_len(&cand_sa);
+    if (cand_len == 0) {
+        if (unsupported) (*unsupported)++;
+        return 0;
+    }
+    return sendto(udp_fd, ping_msg, strlen(ping_msg), 0,
+        (struct sockaddr *)&cand_sa, cand_len) >= 0;
+}
+
+/**
+ * Waits for one valid punch response within the monotonic deadline.
+ * @param udp_fd       UDP socket fd.
+ * @param session_id   Expected session id.
+ * @param from_id      Local peer id.
+ * @param to_id        Remote peer id.
+ * @param wait_ms      Maximum wait for this step.
+ * @param deadline_ms  Absolute monotonic deadline.
+ * @param selected_addr Output selected address.
+ * @param malformed    Malformed packet counter.
+ * @param mismatched   Session or peer mismatch counter.
+ * @return KC_P2P_OK on valid response, KC_P2P_ETIMEOUT otherwise.
+ */
+static int kc_p2p_punch_wait_response(int udp_fd, const char *session_id,
+    const char *from_id, const char *to_id, int wait_ms, uint64_t deadline_ms,
+    struct sockaddr_storage *selected_addr, int *malformed, int *mismatched)
+{
+    uint64_t now;
+    int remaining_ms;
+    fd_set readfds;
+    struct timeval tv;
+
+    now = kc_p2p_now_ms();
+    if (now >= deadline_ms) return KC_P2P_ETIMEOUT;
+    remaining_ms = (int)(deadline_ms - now);
+    if (remaining_ms > wait_ms) remaining_ms = wait_ms;
+    if (remaining_ms <= 0) return KC_P2P_ETIMEOUT;
+    FD_ZERO(&readfds);
+    FD_SET(udp_fd, &readfds);
+    tv.tv_sec = remaining_ms / 1000;
+    tv.tv_usec = (remaining_ms % 1000) * 1000;
+    if (select(udp_fd + 1, &readfds, NULL, NULL, &tv) <= 0)
+        return KC_P2P_ETIMEOUT;
+    if (FD_ISSET(udp_fd, &readfds)) {
+        char recv_buf[1024];
+        struct sockaddr_storage src_addr;
+        socklen_t src_len = sizeof(src_addr);
+        int n;
+
+        n = recvfrom(udp_fd, recv_buf, sizeof(recv_buf) - 1, 0,
+            (struct sockaddr *)&src_addr, &src_len);
+        if (n > 0) {
+            char rx_sess[64] = {0};
+            char rx_from[KC_P2P_ID_MAX + 1] = {0};
+            char rx_to[KC_P2P_ID_MAX + 1] = {0};
+            int is_ping;
+            int is_pong;
+
+            recv_buf[n] = '\0';
+            is_pong = kc_p2p_parse_punch_packet(recv_buf, "PUNCH_PONG:",
+                rx_sess, rx_from, rx_to);
+            is_ping = 0;
+            if (!is_pong) {
+                is_ping = kc_p2p_parse_punch_packet(recv_buf,
+                    "PUNCH_PING:", rx_sess, rx_from, rx_to);
+            }
+            if (!is_ping && !is_pong) {
+                if (malformed) (*malformed)++;
+                return KC_P2P_ETIMEOUT;
+            }
+            if (((is_ping && strcmp(rx_from, to_id) == 0 &&
+                strcmp(rx_to, from_id) == 0) ||
+                (is_pong && strcmp(rx_from, from_id) == 0 &&
+                strcmp(rx_to, to_id) == 0)) &&
+                strcmp(rx_sess, session_id) == 0)
+            {
+                *selected_addr = src_addr;
+                if (is_ping) {
+                    char pong_msg[256];
+                    snprintf(pong_msg, sizeof(pong_msg),
+                        "PUNCH_PONG:%s:%s:%s\n", session_id, to_id, from_id);
+                    sendto(udp_fd, pong_msg, strlen(pong_msg), 0,
+                        (struct sockaddr *)&src_addr, src_len);
+                }
+                return KC_P2P_OK;
+            }
+            if (mismatched) (*mismatched)++;
+        }
+    }
+    return KC_P2P_ETIMEOUT;
+}
+
+/**
  * Punch select.
  * Summary: Selects a candidate and performs hole punching.
  * @param ctx                   Context.
@@ -4496,147 +4610,86 @@ static int kc_p2p_candidate_sockaddr(const kc_p2p_candidate_t *candidate,
  * @return 0 on success, -1 on error.
  */
 int kc_p2p_punch_select(kc_p2p_t *ctx, int sweep_limit, int udp_fd, const char *session_id, const char *from_id, const char *to_id, const kc_p2p_candidate_t *remote_candidates, int remote_candidate_count, struct sockaddr_storage *selected_addr) {
+    char ping_msg[256];
+    uint64_t deadline_ms;
+    int direct_count;
+    int sent_count;
+    int malformed_count;
+    int mismatch_count;
+    int unsupported_count;
+
     (void)ctx;
-    if (remote_candidate_count <= 0) return KC_P2P_ERROR;
-    int direct_count = 0;
+    if (remote_candidate_count <= 0) {
+        fprintf(stderr, "p2p: punch failed: no candidates\n");
+        return KC_P2P_ERROR;
+    }
+    if (sweep_limit < 0) sweep_limit = 0;
+    deadline_ms = kc_p2p_now_ms() + KC_P2P_PUNCH_TOTAL_MS;
+    direct_count = 0;
+    sent_count = 0;
+    malformed_count = 0;
+    mismatch_count = 0;
+    unsupported_count = 0;
     for (int c = 0; c < remote_candidate_count; c++) {
         if (remote_candidates[c].priority < 300u) direct_count++;
     }
-    
-    char ping_msg[256];
-    snprintf(ping_msg, sizeof(ping_msg), "PUNCH_PING:%s:%s:%s\n", session_id, from_id, to_id);
-    
-    for (int i = 0; direct_count > 0 && i < 3; i++) { 
+    snprintf(ping_msg, sizeof(ping_msg), "PUNCH_PING:%s:%s:%s\n",
+        session_id, from_id, to_id);
+    for (int i = 0; direct_count > 0 && i < KC_P2P_PUNCH_DIRECT_ROUNDS; i++) {
         for (int c = 0; c < remote_candidate_count; c++) {
-            struct sockaddr_storage cand_sa;
-            socklen_t cand_len;
-
             if (remote_candidates[c].priority >= 300u) continue;
-            memset(&cand_sa, 0, sizeof(cand_sa));
-            if (!kc_p2p_candidate_sockaddr(&remote_candidates[c], &cand_sa))
-                continue;
-            cand_len = kc_p2p_sockaddr_len(&cand_sa);
-            sendto(udp_fd, ping_msg, strlen(ping_msg), 0, (struct sockaddr *)&cand_sa, cand_len);
+            sent_count += kc_p2p_punch_send_candidate(udp_fd,
+                &remote_candidates[c], ping_msg, &unsupported_count);
         }
-        
-        fd_set readfds;
-        FD_ZERO(&readfds);
-        FD_SET(udp_fd, &readfds);
-        struct timeval tv;
-        tv.tv_sec = 0;
-        tv.tv_usec = 500000; 
-        
-        if (select(udp_fd + 1, &readfds, NULL, NULL, &tv) > 0) {
-            if (FD_ISSET(udp_fd, &readfds)) {
-                char recv_buf[1024];
-                struct sockaddr_storage src_addr;
-                socklen_t src_len = sizeof(src_addr);
-                int n = recvfrom(udp_fd, recv_buf, sizeof(recv_buf) - 1, 0, (struct sockaddr *)&src_addr, &src_len);
-                if (n > 0) {
-                    char rx_sess[64] = {0};
-                    char rx_from[KC_P2P_ID_MAX + 1] = {0};
-                    char rx_to[KC_P2P_ID_MAX + 1] = {0};
-                    int is_ping = 0;
-                    int is_pong = 0;
-
-                    recv_buf[n] = '\0';
-                    is_pong = kc_p2p_parse_punch_packet(recv_buf,
-                        "PUNCH_PONG:", rx_sess, rx_from, rx_to);
-                    if (!is_pong) {
-                        is_ping = kc_p2p_parse_punch_packet(recv_buf,
-                            "PUNCH_PING:", rx_sess, rx_from, rx_to);
-                    }
-                    if (((is_ping && strcmp(rx_from, to_id) == 0 &&
-                        strcmp(rx_to, from_id) == 0) ||
-                        (is_pong && strcmp(rx_from, from_id) == 0 &&
-                        strcmp(rx_to, to_id) == 0)) &&
-                        strcmp(rx_sess, session_id) == 0) {
-                        *selected_addr = src_addr;
-                        if (is_ping) {
-                            char pong_msg[256];
-                            snprintf(pong_msg, sizeof(pong_msg), "PUNCH_PONG:%s:%s:%s\n", session_id, to_id, from_id);
-                            sendto(udp_fd, pong_msg, strlen(pong_msg), 0, (struct sockaddr *)&src_addr, src_len);
-                        }
-                        return KC_P2P_OK;
-                    }
-                }
-            }
-        }
+        if (kc_p2p_punch_wait_response(udp_fd, session_id, from_id, to_id,
+            KC_P2P_PUNCH_DIRECT_WAIT_MS, deadline_ms, selected_addr,
+            &malformed_count, &mismatch_count) == KC_P2P_OK)
+            return KC_P2P_OK;
     }
-    
-    for (int sweep = 1; sweep <= sweep_limit; sweep++) {
-        for (int sign = -1; sign <= 1; sign += 2) {
+    for (int sweep = 1; sweep <= sweep_limit && kc_p2p_now_ms() < deadline_ms;
+        sweep++)
+    {
+        for (int sign = -1; sign <= 1 && kc_p2p_now_ms() < deadline_ms;
+            sign += 2)
+        {
             int offset = sweep * sign;
             for (int c = 0; c < remote_candidate_count; c++) {
                 struct sockaddr_storage exact_sa;
-                socklen_t exact_len;
-                memset(&exact_sa, 0, sizeof(exact_sa));
+                int test_port;
+
+                sent_count += kc_p2p_punch_send_candidate(udp_fd,
+                    &remote_candidates[c], ping_msg, &unsupported_count);
                 if (!kc_p2p_candidate_sockaddr(&remote_candidates[c], &exact_sa))
                     continue;
-                exact_len = kc_p2p_sockaddr_len(&exact_sa);
-                sendto(udp_fd, ping_msg, strlen(ping_msg), 0, (struct sockaddr *)&exact_sa, exact_len);
-                
-                if (exact_sa.ss_family == AF_INET &&
-                    (remote_candidates[c].type == KC_P2P_CAND_SRFLX || remote_candidates[c].type == KC_P2P_CAND_PUBLIC)) {
-                    struct sockaddr_storage cand_sa;
-                    socklen_t cand_len;
-                    memset(&cand_sa, 0, sizeof(cand_sa));
-                    if (!kc_p2p_candidate_sockaddr(&remote_candidates[c], &cand_sa))
-                        continue;
-                    int test_port = remote_candidates[c].port + offset;
-                    if (test_port > 0 && test_port <= 65535) {
-                        kc_p2p_sockaddr_set_port(&cand_sa,
-                            (unsigned short)test_port);
-                        cand_len = kc_p2p_sockaddr_len(&cand_sa);
-                        sendto(udp_fd, ping_msg, strlen(ping_msg), 0, (struct sockaddr *)&cand_sa, cand_len);
-                    }
-                }
+                if (exact_sa.ss_family != AF_INET) continue;
+                if (remote_candidates[c].type != KC_P2P_CAND_SRFLX &&
+                    remote_candidates[c].type != KC_P2P_CAND_PUBLIC)
+                    continue;
+                test_port = remote_candidates[c].port + offset;
+                if (test_port <= 0 || test_port > 65535) continue;
+                kc_p2p_sockaddr_set_port(&exact_sa, (unsigned short)test_port);
+                if (kc_p2p_sendto_addr(udp_fd, ping_msg, strlen(ping_msg),
+                    &exact_sa) >= 0)
+                    sent_count++;
             }
-            
-            fd_set readfds;
-            FD_ZERO(&readfds);
-            FD_SET(udp_fd, &readfds);
-            struct timeval tv;
-            tv.tv_sec = 0;
-            tv.tv_usec = 20000; 
-            
-            if (select(udp_fd + 1, &readfds, NULL, NULL, &tv) > 0) {
-                if (FD_ISSET(udp_fd, &readfds)) {
-                    char recv_buf[1024];
-                    struct sockaddr_storage src_addr;
-                    socklen_t src_len = sizeof(src_addr);
-                    int n = recvfrom(udp_fd, recv_buf, sizeof(recv_buf) - 1, 0, (struct sockaddr *)&src_addr, &src_len);
-                    if (n > 0) {
-                        char rx_sess[64] = {0};
-                        char rx_from[KC_P2P_ID_MAX + 1] = {0};
-                        char rx_to[KC_P2P_ID_MAX + 1] = {0};
-                        int is_ping = 0;
-                        int is_pong = 0;
-
-                        recv_buf[n] = '\0';
-                        is_pong = kc_p2p_parse_punch_packet(recv_buf,
-                            "PUNCH_PONG:", rx_sess, rx_from, rx_to);
-                        if (!is_pong) {
-                            is_ping = kc_p2p_parse_punch_packet(recv_buf,
-                                "PUNCH_PING:", rx_sess, rx_from, rx_to);
-                        }
-                        if (((is_ping && strcmp(rx_from, to_id) == 0 &&
-                            strcmp(rx_to, from_id) == 0) ||
-                            (is_pong && strcmp(rx_from, from_id) == 0 &&
-                            strcmp(rx_to, to_id) == 0)) &&
-                            strcmp(rx_sess, session_id) == 0) {
-                            *selected_addr = src_addr;
-                            if (is_ping) {
-                                char pong_msg[256];
-                                snprintf(pong_msg, sizeof(pong_msg), "PUNCH_PONG:%s:%s:%s\n", session_id, to_id, from_id);
-                                sendto(udp_fd, pong_msg, strlen(pong_msg), 0, (struct sockaddr *)&src_addr, src_len);
-                            }
-                            return KC_P2P_OK;
-                        }
-                    }
-                }
-            }
+            if (kc_p2p_punch_wait_response(udp_fd, session_id, from_id, to_id,
+                KC_P2P_PUNCH_SWEEP_WAIT_MS, deadline_ms, selected_addr,
+                &malformed_count, &mismatch_count) == KC_P2P_OK)
+                return KC_P2P_OK;
         }
+    }
+    if (sent_count == 0) {
+        fprintf(stderr, "p2p: punch failed: all candidates invalid or unsupported\n");
+    } else if (malformed_count > 0) {
+        fprintf(stderr, "p2p: punch failed: malformed peer packet\n");
+    } else if (mismatch_count > 0) {
+        fprintf(stderr, "p2p: punch failed: session mismatch\n");
+    } else if (unsupported_count > 0) {
+        fprintf(stderr, "p2p: punch failed: address family mismatch\n");
+    } else if (kc_p2p_now_ms() >= deadline_ms) {
+        fprintf(stderr, "p2p: punch failed: timeout\n");
+    } else {
+        fprintf(stderr, "p2p: punch failed: all attempts exhausted\n");
     }
     return KC_P2P_ERROR;
 }
