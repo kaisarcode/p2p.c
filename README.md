@@ -170,7 +170,7 @@ It does **not** bind UDP, perform NAT discovery, relay UDP, or carry application
 
 The inter-peer data channel is **UDP-based**.
 By default it tries direct UDP hole punching first.
-In `--tcp` mode, P2P wraps that UDP path in an internal encrypted reliable stream so local TCP applications still see ordered, reconstructable, full-duplex byte semantics.
+In `--tcp` mode, RP2P wraps that UDP path in an internal encrypted reliable stream so local TCP applications still see ordered, reconstructable, full-duplex byte semantics.
 Each TCP client session performs a fresh ephemeral key exchange with the remote peer before application data flows, and those session keys are discarded when the session ends.
 The `--tcp` and `--udp` flags control how data enters and leaves the tunnel on each end:
 
@@ -192,9 +192,9 @@ direct address and port to try for hole punching.
 STUN is performed by publishers and consumers against external STUN servers.
 The index is not a STUN server and does not observe or validate peer UDP endpoints.
 
-P2P does not support TURN-style fallback. TURN relays application traffic through
+RP2P does not support TURN-style fallback. TURN relays application traffic through
 a third party, which changes the model from direct peer-to-peer transport to
-server-mediated transport. P2P is designed to preserve direct P2P data paths, so
+server-mediated transport. RP2P is designed to preserve direct P2P data paths, so
 on restrictive NATs where direct connectivity cannot be established, some
 sessions may fail instead of degrading to a relay.
 
@@ -238,7 +238,7 @@ rp2p_close(ctx);
 ## Wire Protocol
 
 Index control messages are plain text over TCP. The inter-peer data channel is UDP-based regardless of the `--tcp`/`--udp` flag.
-UDP is used only between peers for hole-punch probes, keepalives, and direct payload transport. In `--tcp` mode, application bytes are carried inside P2P's own encrypted reliable stream frames over that UDP path.
+UDP is used only between peers for hole-punch probes, keepalives, and direct payload transport. In `--tcp` mode, application bytes are carried inside RP2P's own encrypted reliable stream frames over that UDP path.
 
 | Request | Response |
 | :--- | :--- |
@@ -251,7 +251,7 @@ UDP is used only between peers for hole-punch probes, keepalives, and direct pay
 | forwarded by index | `PUNCH_CALL2:me:session\nCAND:...\nEND` to target |
 | `PUNCH_PING:...` | Direct peer STUN-like probe (UDP) |
 | `PUNCH_PONG:...` | Direct peer STUN-like reply (UDP) |
-| `P2P_KA:` | UDP keepalive over direct path |
+| `RRP2P_KA:` | UDP keepalive over direct path |
 
 ### TCP Stream Layer
 
@@ -262,7 +262,7 @@ In `--tcp` mode only, peers run an internal session protocol over the selected U
 - Peers exchange ephemeral public keys before application data flows.
 - Session keys are derived per direction and discarded when the session closes.
 - DATA frames are encrypted and authenticated.
-- Ordering, retransmission, duplicate suppression, and stream reconstruction happen inside P2P.
+- Ordering, retransmission, duplicate suppression, and stream reconstruction happen inside RP2P.
 - `--udp` mode does not use this layer and keeps plain datagram semantics.
 
 Internal TCP stream frame types:
@@ -327,7 +327,7 @@ Internal debug-only environment knobs used for fault-injection tests:
 - `RP2P_DEBUG_STREAM_DROP_EVERY=N` drops every Nth TCP stream DATA frame once.
 - `RP2P_DEBUG_STREAM_REORDER_EVERY=N` delays every Nth TCP stream DATA frame once so the next frame arrives first.
 
-`RP2P_INDEX` and `P2P_BIND` are parsed by the options loader internally, but the current CLI still requires explicit positional arguments for the index address and explicit command flags for bind behavior.
+`RP2P_INDEX` and `RP2P_BIND` are parsed by the options loader internally, but the current CLI still requires explicit positional arguments for the index address and explicit command flags for bind behavior.
 
 When `RP2P_VIP` defines a password for one seat, that seat must use its VIP password and no longer accepts the global `RP2P_PASS`. VIP seats are reserved at index startup and keep their place even while offline.
 Seats not listed in `RP2P_VIP` still use the global `RP2P_PASS`, but they may only occupy the non-VIP capacity left after VIP reservations.
@@ -338,7 +338,6 @@ Examples:
 
 ```bash
 RP2P_PASS='global' RP2P_VIP='web webpass' rp2p idx 9876
-
 RP2P_PASS='webpass' rp2p set web@idx.example.com:9876 --tcp 8080
 RP2P_PASS='global' rp2p set blog@idx.example.com:9876 --tcp 8080
 ```
@@ -371,14 +370,14 @@ rp2p_set_pass(ctx, "password");
 - The index does not require a public UDP port.
 - The index does not relay application traffic.
 - The inter-peer transport is UDP-based and stays peer-to-peer.
-- `--tcp` now uses an internal encrypted reliable stream over UDP. Local service still communicates over TCP, but P2P handles ordering, retransmission, reconstruction, and payload encryption inside the tunnel.
+- `--tcp` now uses an internal encrypted reliable stream over UDP. Local service still communicates over TCP, but RP2P handles ordering, retransmission, reconstruction, and payload encryption inside the tunnel.
 - `set --tcp <port>` connects to a real local TCP backend on `127.0.0.1:<port>`.
 - `con --tcp <port>` exposes a local TCP listener on `127.0.0.1:<port>`.
 - Each accepted local TCP client creates a separate peer session.
 - The publisher can serve multiple consumers concurrently.
 - `--udp` mode forwards UDP datagrams directly through the tunnel with no protocol conversion, ordering, or retransmission.
 - `--stun` is opt-in and used only for endpoint discovery. It does not carry application payloads.
-- P2P does not implement TURN or relay application traffic through the index or other third-party servers.
+- RP2P does not implement TURN or relay application traffic through the index or other third-party servers.
 - On restrictive NATs where direct UDP connectivity cannot be established, some sessions may fail by design rather than fall back to relayed transport.
 
 ---

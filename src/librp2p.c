@@ -5651,7 +5651,7 @@ int rp2p_wait(
                     }
 
                     if (found >= 0) {
-                        if (strncmp(buf, "P2P_KA:", 7) == 0 ||
+                        if (strncmp(buf, "RP2P_KA:", 7) == 0 ||
                             strncmp(buf, "P2P_PUNCH:", 10) == 0 ||
                             strncmp(buf, "PUNCH_PING:", 11) == 0 ||
                             strncmp(buf, "PUNCH_PONG:", 11) == 0) {
@@ -5702,7 +5702,7 @@ int rp2p_wait(
                             sessions[unset].last_ka = sessions[unset].last_rx;
                             rp2p_sendto_addr(udp_fd, buf, (size_t)n, &from);
                             if (strncmp(buf, "P2P_PUNCH:", 10) != 0 &&
-                                strncmp(buf, "P2P_KA:", 7) != 0) {
+                                strncmp(buf, "RP2P_KA:", 7) != 0) {
                                 if (sessions[unset].is_tcp) {
                                     if (sessions[unset].backend_fd != RP2P_FD_INVALID &&
                                         rp2p_stream_process_packet(ctx, udp_fd,
@@ -5772,7 +5772,7 @@ int rp2p_wait(
                     }
                 }
                 if (rp2p_now_s() - sessions[i].last_ka > RP2P_KEEPALIVE_S) {
-                rp2p_sendto_addr(udp_fd, "P2P_KA:", 7,
+                rp2p_sendto_addr(udp_fd, "RP2P_KA:", 7,
                     &sessions[i].peer_addr);
                     sessions[i].last_ka = rp2p_now_s();
                 }
@@ -6189,7 +6189,7 @@ udp_skip:
             n = (int)recvfrom(sessions[i].fd, buf, sizeof(buf), 0,
                 (struct sockaddr *)&from, &fromlen);
             if (n > 0) {
-                if ((n >= 7 && strncmp(buf, "P2P_KA:", 7) == 0) ||
+                if ((n >= 7 && strncmp(buf, "RP2P_KA:", 7) == 0) ||
                     (n >= 10 && strncmp(buf, "P2P_PUNCH:", 10) == 0) ||
                     (n >= 11 && strncmp(buf, "PUNCH_PING:", 11) == 0) ||
                     (n >= 11 && strncmp(buf, "PUNCH_PONG:", 11) == 0)) {
@@ -6228,7 +6228,7 @@ udp_skip:
                 }
             }
             if (rp2p_now_s() - sessions[i].last_ka > RP2P_KEEPALIVE_S) {
-                rp2p_sendto_addr(sessions[i].fd, "P2P_KA:", 7,
+                rp2p_sendto_addr(sessions[i].fd, "RP2P_KA:", 7,
                     &sessions[i].peer_addr);
                 sessions[i].last_ka = rp2p_now_s();
             }
