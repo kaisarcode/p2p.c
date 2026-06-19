@@ -1018,6 +1018,243 @@ kc_test_tcp_loss_moderate() {
     kc_test_pass "tcp-loss-moderate-$host"; return 0
 }
 
+# Tests adversarial protocol messages against the index.
+# @return 0 on success, 1 on failure.
+kc_test_protocol_vectors() {
+    port=$1
+    out="$TMP_ROOT/proto-unknown.out"
+    if ! printf 'HELLO KCP2P/1\nBOGUS\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-unknown-command"; return 1
+    fi
+    if ! grep -q '^ERROR:unknown command$' "$out"; then
+        kc_test_fail "proto-unknown-command"; return 1
+    fi
+    kc_test_pass "proto-unknown-command"
+    out="$TMP_ROOT/proto-reg-bad-id.out"
+    if ! printf 'HELLO KCP2P/1\nREGISTER:bad id\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-reg-invalid-id"; return 1
+    fi
+    if ! grep -q '^ERROR:invalid id$' "$out"; then
+        kc_test_fail "proto-reg-invalid-id"; return 1
+    fi
+    kc_test_pass "proto-reg-invalid-id"
+    out="$TMP_ROOT/proto-reg-colon-id.out"
+    if ! printf 'HELLO KCP2P/1\nREGISTER:bad:id\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-reg-colon-id"; return 1
+    fi
+    if ! grep -q '^ERROR:invalid id$' "$out"; then
+        kc_test_fail "proto-reg-colon-id"; return 1
+    fi
+    kc_test_pass "proto-reg-colon-id"
+    out="$TMP_ROOT/proto-reg-empty.out"
+    if ! printf 'HELLO KCP2P/1\nREGISTER:\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-reg-empty-id"; return 1
+    fi
+    if ! grep -q '^ERROR:invalid id$' "$out"; then
+        kc_test_fail "proto-reg-empty-id"; return 1
+    fi
+    kc_test_pass "proto-reg-empty-id"
+    out="$TMP_ROOT/proto-reg-valid.out"
+    if ! printf 'HELLO KCP2P/1\nREGISTER:validproto\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-reg-valid"; return 1
+    fi
+    if grep -q '^ERROR:' "$out"; then
+        kc_test_fail "proto-reg-valid"; return 1
+    fi
+    if ! grep -q '^CHALLENGE:' "$out"; then
+        kc_test_fail "proto-reg-valid"; return 1
+    fi
+    kc_test_pass "proto-reg-valid"
+    out="$TMP_ROOT/proto-reg-bad-sol.out"
+    if ! printf 'HELLO KCP2P/1\nREGISTER:badproof:SOLUTION:xx:PROOF:yy\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-reg-bad-proof"; return 1
+    fi
+    if ! grep -q '^AUTH_FAILED$' "$out"; then
+        kc_test_fail "proto-reg-bad-proof"; return 1
+    fi
+    kc_test_pass "proto-reg-bad-proof"
+    out="$TMP_ROOT/proto-list-extra.out"
+    if ! printf 'HELLO KCP2P/1\nLIST:extra\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-list-extra"; return 1
+    fi
+    if ! grep -q '^ERROR:malformed$' "$out"; then
+        kc_test_fail "proto-list-extra"; return 1
+    fi
+    kc_test_pass "proto-list-extra"
+    out="$TMP_ROOT/proto-dereg-no-key.out"
+    if ! printf 'HELLO KCP2P/1\nDEREGISTER:test\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-dereg-no-key"; return 1
+    fi
+    if ! grep -q '^ERROR:malformed$' "$out"; then
+        kc_test_fail "proto-dereg-no-key"; return 1
+    fi
+    kc_test_pass "proto-dereg-no-key"
+    out="$TMP_ROOT/proto-dereg-bad-key.out"
+    if ! printf 'HELLO KCP2P/1\nDEREGISTER:nonexistent:KEY:abc\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-dereg-bad-key"; return 1
+    fi
+    if ! grep -q '^ERROR:invalid key$' "$out"; then
+        kc_test_fail "proto-dereg-bad-key"; return 1
+    fi
+    kc_test_pass "proto-dereg-bad-key"
+    out="$TMP_ROOT/proto-punch-bad-self.out"
+    if ! printf 'HELLO KCP2P/1\nPUNCH_REQ2:bad@self:target:sess\nEND\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-punch-bad-self"; return 1
+    fi
+    if ! grep -q '^ERROR:malformed$' "$out"; then
+        kc_test_fail "proto-punch-bad-self"; return 1
+    fi
+    kc_test_pass "proto-punch-bad-self"
+    out="$TMP_ROOT/proto-punch-extra.out"
+    if ! printf 'HELLO KCP2P/1\nPUNCH_REQ2:c-1:target:sess:extra\nEND\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-punch-extra-fields"; return 1
+    fi
+    if ! grep -q '^ERROR:malformed$' "$out"; then
+        kc_test_fail "proto-punch-extra-fields"; return 1
+    fi
+    kc_test_pass "proto-punch-extra-fields"
+    out="$TMP_ROOT/proto-punch-ipv6-cand.out"
+    if ! printf 'HELLO KCP2P/1\nPUNCH_REQ2:c-1:nosuch:sess\nCAND:HOST:[::1]:1234\nEND\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-ipv6-candidate"; return 1
+    fi
+    if grep -q '^ERROR:malformed$' "$out"; then
+        kc_test_fail "proto-ipv6-candidate"; return 1
+    fi
+    kc_test_pass "proto-ipv6-candidate"
+    out="$TMP_ROOT/proto-ack-bad.out"
+    if ! printf 'HELLO KCP2P/1\nPUNCH_ACK2:validtarget:bad@ack:sess\nEND\n' | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+        kc_test_fail "proto-ack-bad"; return 1
+    fi
+    if ! grep -q '^ERROR:malformed$' "$out"; then
+        kc_test_fail "proto-ack-bad"; return 1
+    fi
+    kc_test_pass "proto-ack-bad"
+    kc_test_pass "protocol-vectors"
+    return 0
+}
+
+# Verifies the tunnel survives index disappearance.
+# @return 0 on success, 1 on failure.
+kc_test_index_disappearance() {
+    port=$1
+    backend_port=$2
+    listen_port=$3
+    out1="$TMP_ROOT/disappear-idx1.out"
+    out2="$TMP_ROOT/disappear-idx2.out"
+    kc_test_tcp_start "$backend_port" || return 1
+    "$BIN" set "idxdis@127.0.0.1:${port}" --tcp "$backend_port" > "$TMP_ROOT/disappear-set.log" 2>&1 &
+    spid=$!
+    sleep 2
+    "$BIN" con "idxdis@127.0.0.1:${port}" --tcp "$listen_port" > "$TMP_ROOT/disappear-con.log" 2>&1 &
+    cpid=$!
+    sleep 2
+    if ! kc_test_tcp_roundtrip "$listen_port" "predis" "$out1"; then
+        kill -9 "$spid" "$cpid" "$HPID" 2>/dev/null
+        wait "$spid" "$cpid" "$HPID" 2>/dev/null
+        kc_test_fail "index-disappearance-initial"
+        return 1
+    fi
+    if ! grep -q "predis" "$out1"; then
+        kill -9 "$spid" "$cpid" "$HPID" 2>/dev/null
+        wait "$spid" "$cpid" "$HPID" 2>/dev/null
+        kc_test_fail "index-disappearance-initial"
+        return 1
+    fi
+    kc_test_index_stop
+    sleep 1
+    if ! kc_test_tcp_roundtrip "$listen_port" "postdis" "$out2"; then
+        kill -9 "$spid" "$cpid" "$HPID" 2>/dev/null
+        wait "$spid" "$cpid" "$HPID" 2>/dev/null
+        kc_test_fail "index-disappearance-tunnel"
+        return 1
+    fi
+    if ! grep -q "postdis" "$out2"; then
+        kill -9 "$spid" "$cpid" "$HPID" 2>/dev/null
+        wait "$spid" "$cpid" "$HPID" 2>/dev/null
+        kc_test_fail "index-disappearance-tunnel"
+        return 1
+    fi
+    kill -9 "$spid" "$cpid" "$HPID" 2>/dev/null
+    wait "$spid" "$cpid" "$HPID" 2>/dev/null
+    kc_test_pass "index-disappearance"
+    return 0
+}
+
+# Verifies one peer can disappear without crashing the other.
+# @return 0 on success, 1 on failure.
+kc_test_peer_disappearance() {
+    port=$1
+    backend_port=$2
+    listen_port=$3
+    out1="$TMP_ROOT/disappear-peer.out"
+    kc_test_tcp_start "$backend_port" || return 1
+    "$BIN" set "peerd@127.0.0.1:${port}" --tcp "$backend_port" > "$TMP_ROOT/disappear-peer-set.log" 2>&1 &
+    spid=$!
+    sleep 2
+    "$BIN" con "peerd@127.0.0.1:${port}" --tcp "$listen_port" > "$TMP_ROOT/disappear-peer-con.log" 2>&1 &
+    cpid=$!
+    sleep 2
+    if ! kc_test_tcp_roundtrip "$listen_port" "peertest" "$out1"; then
+        kill -9 "$spid" "$cpid" "$HPID" 2>/dev/null
+        wait "$spid" "$cpid" "$HPID" 2>/dev/null
+        kc_test_fail "peer-disappearance-initial"
+        return 1
+    fi
+    if ! grep -q "peertest" "$out1"; then
+        kill -9 "$spid" "$cpid" "$HPID" 2>/dev/null
+        wait "$spid" "$cpid" "$HPID" 2>/dev/null
+        kc_test_fail "peer-disappearance-initial"
+        return 1
+    fi
+    kill -9 "$cpid" 2>/dev/null || true
+    wait "$cpid" 2>/dev/null || true
+    sleep 1
+    if ! kill -0 "$spid" 2>/dev/null; then
+        kill -9 "$HPID" 2>/dev/null
+        wait "$HPID" 2>/dev/null
+        kc_test_fail "consumer-disappearance-publisher"
+        return 1
+    fi
+    kill -9 "$spid" "$HPID" 2>/dev/null
+    wait "$spid" "$HPID" 2>/dev/null
+    kc_test_pass "consumer-disappearance"
+    kc_test_tcp_start "$backend_port" || return 1
+    "$BIN" set "peerd2@127.0.0.1:${port}" --tcp "$backend_port" > "$TMP_ROOT/disappear-pub-set.log" 2>&1 &
+    spid=$!
+    sleep 2
+    "$BIN" con "peerd2@127.0.0.1:${port}" --tcp "$listen_port" > "$TMP_ROOT/disappear-pub-con.log" 2>&1 &
+    cpid=$!
+    sleep 2
+
+    out2="$TMP_ROOT/disappear-pub2.out"
+    if ! kc_test_tcp_roundtrip "$listen_port" "pubtest" "$out2"; then
+        kill -9 "$spid" "$cpid" "$HPID" 2>/dev/null
+        wait "$spid" "$cpid" "$HPID" 2>/dev/null
+        kc_test_fail "publisher-disappearance-initial"
+        return 1
+    fi
+    if ! grep -q "pubtest" "$out2"; then
+        kill -9 "$spid" "$cpid" "$HPID" 2>/dev/null
+        wait "$spid" "$cpid" "$HPID" 2>/dev/null
+        kc_test_fail "publisher-disappearance-initial"
+        return 1
+    fi
+
+    kill -9 "$spid" 2>/dev/null || true
+    wait "$spid" 2>/dev/null || true
+    sleep 1
+    if ! kill -0 "$cpid" 2>/dev/null; then
+        kill -9 "$HPID" 2>/dev/null
+        wait "$HPID" 2>/dev/null
+        kc_test_fail "publisher-disappearance-consumer"
+        return 1
+    fi
+    kill -9 "$cpid" "$HPID" 2>/dev/null
+    wait "$cpid" "$HPID" 2>/dev/null
+    kc_test_pass "publisher-disappearance"
+    return 0
+}
+
 # Runs the validation suite.
 # @return 0 on success, 1 on failure.
 kc_test_main() {
@@ -1076,6 +1313,10 @@ kc_test_main() {
     backend_tcp_9=$((PORT_BASE + 40))
     listen_tcp_7=$((PORT_BASE + 122))
     listen_tcp_8=$((PORT_BASE + 123))
+    backend_disappear=$((PORT_BASE + 42))
+    backend_disappear2=$((PORT_BASE + 43))
+    listen_disappear=$((PORT_BASE + 125))
+    listen_disappear2=$((PORT_BASE + 126))
 
     kc_test_binary || return 1
     kc_test_cli || return 1
@@ -1093,9 +1334,12 @@ kc_test_main() {
     kc_test_tcp_reorder "$index_port" web7 "$backend_tcp_7" "$listen_tcp_6" "" || return 1
     kc_test_tcp_loss_moderate "$index_port" web8 "$backend_tcp_8" "$listen_tcp_7" "" || return 1
     kc_test_tcp_loss_moderate "$index_port" web9 "$backend_tcp_9" "$listen_tcp_8" "" || return 1
+    kc_test_protocol_vectors "$index_port" || return 1
+    kc_test_peer_disappearance "$index_port" "$backend_disappear" "$listen_disappear" || return 1
     kc_test_set_udp "$index_port" game0 "$backend_udp_1" "" || return 1
     kc_test_udp_echo "$index_port" game1 "$backend_udp_2" "$listen_udp_1" "" || return 1
     kc_test_udp_large "$index_port" game2 "$backend_udp_3" "$listen_udp_2" "" || return 1
+    kc_test_index_disappearance "$index_port" "$backend_disappear2" "$listen_disappear2" || return 1
     kc_test_index_stop
     kc_test_index_start "$public_pow_port" 20 "" public-pow || return 1
     kc_test_set_tcp "$public_pow_port" publicpow "$auth_backend_1" "" || return 1
