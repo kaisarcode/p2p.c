@@ -27,6 +27,9 @@ CTRL_PEER='RP2P_CTRTOK_PEER:'
 CTRL_END='RP2P_CTRTOK_END'
 CTRL_CHALLENGE='RP2P_CTRTOK_CHALLENGE:'
 CTRL_AUTH_FAILED='RP2P_CTRTOK_AUTH_FAILED'
+CTRL_SOLUTION='RP2P_CTRTOK_SOLUTION:'
+CTRL_PROOF='RP2P_CTRTOK_PROOF:'
+CTRL_KEY='RP2P_CTRTOK_KEY:'
 CTRL_NOT_FOUND='RP2P_CTRTOK_NOT_FOUND'
 CTRL_PUNCH_REQ2='RP2P_CTRTOK_PUNCH_REQ2:'
 CTRL_PUNCH_ACK2='RP2P_CTRTOK_PUNCH_ACK2:'
@@ -1423,7 +1426,7 @@ kc_test_protocol_vectors() {
     fi
     kc_test_pass "protocol register valid id returns $CTRL_CHALLENGE"
     out="$TMP_ROOT/proto-reg-bad-sol.out"
-    if ! printf '%s\n%sbadproof:SOLUTION:xx:PROOF:yy\n' "$CTRL_HELLO" "$CTRL_REGISTER" | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+    if ! printf '%s\n%sbadproof:%sxx:%syy\n' "$CTRL_HELLO" "$CTRL_REGISTER" "$CTRL_SOLUTION" "$CTRL_PROOF" | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
         kc_test_fail "protocol $CTRL_REGISTER with bad proof: expected $CTRL_AUTH_FAILED, nc failed"
         return 1
     fi
@@ -1453,7 +1456,7 @@ kc_test_protocol_vectors() {
     fi
     kc_test_pass "protocol reject deregistration without key"
     out="$TMP_ROOT/proto-dereg-bad-key.out"
-    if ! printf '%s\n%snonexistent:KEY:abc\n' "$CTRL_HELLO" "$CTRL_DEREGISTER" | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
+    if ! printf '%s\n%snonexistent:%sabc\n' "$CTRL_HELLO" "$CTRL_DEREGISTER" "$CTRL_KEY" | nc -w 2 127.0.0.1 "$port" > "$out" 2>/dev/null; then
         kc_test_fail "protocol deregistration with bad key: expected $CTRL_ERR_INVALID_KEY, nc failed"
         return 1
     fi

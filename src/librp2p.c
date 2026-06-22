@@ -121,7 +121,10 @@ typedef int rp2p_fd_t;
 #define RP2P_CTRTOK_END          "RP2P_CTRTOK_END"
 #define RP2P_CTRTOK_CHALLENGE    "RP2P_CTRTOK_CHALLENGE:"
 #define RP2P_CTRTOK_OK           "RP2P_CTRTOK_OK"
-#define RP2P_CTRTOK_OK_KEY       "RP2P_CTRTOK_OK:KEY:"
+#define RP2P_CTRTOK_OK_KEY       "RP2P_CTRTOK_OK:RP2P_CTRTOK_KEY:"
+#define RP2P_CTRTOK_SOLUTION     "RP2P_CTRTOK_SOLUTION:"
+#define RP2P_CTRTOK_PROOF        "RP2P_CTRTOK_PROOF:"
+#define RP2P_CTRTOK_KEY          "RP2P_CTRTOK_KEY:"
 #define RP2P_CTRTOK_AUTH_FAILED  "RP2P_CTRTOK_AUTH_FAILED"
 #define RP2P_CTRTOK_NOT_FOUND    "RP2P_CTRTOK_NOT_FOUND"
 #define RP2P_CTRTOK_PUNCH_REQ2   "RP2P_CTRTOK_PUNCH_REQ2:"
@@ -3877,11 +3880,15 @@ static int rp2p_parse_register_solution(const char *line,
     cursor = line + strlen(RP2P_CTRTOK_REGISTER);
     if (!rp2p_parse_field(&cursor, id, RP2P_ID_MAX + 1, ':'))
         return 0;
-    if (strncmp(cursor, "SOLUTION:", 9) != 0) return 0;
-    cursor += 9;
+    if (strncmp(cursor, RP2P_CTRTOK_SOLUTION,
+        strlen(RP2P_CTRTOK_SOLUTION)) != 0)
+        return 0;
+    cursor += strlen(RP2P_CTRTOK_SOLUTION);
     if (!rp2p_parse_field(&cursor, solution, 17, ':')) return 0;
-    if (strncmp(cursor, "PROOF:", 6) != 0) return 0;
-    cursor += 6;
+    if (strncmp(cursor, RP2P_CTRTOK_PROOF,
+        strlen(RP2P_CTRTOK_PROOF)) != 0)
+        return 0;
+    cursor += strlen(RP2P_CTRTOK_PROOF);
     if (!rp2p_parse_field(&cursor, proof, 65, '\0')) return 0;
     if (*cursor != '\0') return 0;
     if (!rp2p_is_valid_id(id)) return 0;
@@ -4018,8 +4025,9 @@ static int rp2p_parse_deregister(const char *line,
         return 0;
     cursor = line + strlen(RP2P_CTRTOK_DEREGISTER);
     if (!rp2p_parse_field(&cursor, id, RP2P_ID_MAX + 1, ':')) return 0;
-    if (strncmp(cursor, "KEY:", 4) != 0) return 0;
-    cursor += 4;
+    if (strncmp(cursor, RP2P_CTRTOK_KEY, strlen(RP2P_CTRTOK_KEY)) != 0)
+        return 0;
+    cursor += strlen(RP2P_CTRTOK_KEY);
     if (!rp2p_parse_field(&cursor, key, RP2P_KEY_STR_SZ, '\0'))
         return 0;
     if (*cursor != '\0') return 0;
@@ -4857,7 +4865,7 @@ int rp2p_serve_index(
                                 &peer_len) != 0)
                                 memset(&peer_sa, 0, sizeof(peer_sa));
 
-                            if (strstr(cmd_buf, ":SOLUTION:") == NULL &&
+                            if (strstr(cmd_buf, ":" RP2P_CTRTOK_SOLUTION) == NULL &&
                                 !rp2p_parse_register_id(cmd_buf, id))
                             {
                                 rp2p_tcp_send(c->fd,
@@ -4865,7 +4873,7 @@ int rp2p_serve_index(
                                 continue;
                             }
 
-                            if (strstr(cmd_buf, ":SOLUTION:") != NULL) {
+                            if (strstr(cmd_buf, ":" RP2P_CTRTOK_SOLUTION) != NULL) {
                                 char solution[17];
                                 char proof[65];
                                 int cidx;
@@ -5218,8 +5226,8 @@ int rp2p_deregister(
     rp2p_load_key(id, key, sizeof(key));
     if (key[0] == '\0') return RP2P_ENOENT;
 
-    snprintf(cmd, sizeof(cmd), "%s%s:KEY:%s", RP2P_CTRTOK_DEREGISTER,
-        id, key);
+    snprintf(cmd, sizeof(cmd), "%s%s:%s%s", RP2P_CTRTOK_DEREGISTER,
+        id, RP2P_CTRTOK_KEY, key);
     {
     rp2p_fd_t fd = rp2p_control_connect(index_host, index_port);
         if (RP2P_ISERR(fd)) return RP2P_ENET;
@@ -5294,9 +5302,9 @@ int rp2p_wait(
             if (!RP2P_ISERR(udp_fd)) RP2P_FD_CLOSE(udp_fd);
             return RP2P_ERROR;
         }
-        snprintf(send_buf, sizeof(send_buf),
-            "%s%s:SOLUTION:%s:PROOF:%s", RP2P_CTRTOK_REGISTER, self_id,
-            solution, proof);
+        snprintf(send_buf, sizeof(send_buf), "%s%s:%s%s:%s%s",
+            RP2P_CTRTOK_REGISTER, self_id, RP2P_CTRTOK_SOLUTION,
+            solution, RP2P_CTRTOK_PROOF, proof);
         if (rp2p_tcp_send(control_fd, send_buf) != RP2P_OK ||
             rp2p_tcp_readline(control_fd, recv_buf, (int)sizeof(recv_buf), 10) < 0)
         {
