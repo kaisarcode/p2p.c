@@ -1,5 +1,4 @@
 #!/bin/sh
-# test.sh
 # Summary: Validation suite for rp2p TCP publish and consume mode.
 # Author:  KaisarCode
 # Website: https://kaisarcode.com
