@@ -279,7 +279,9 @@ typedef struct {
     unsigned char frame[RP2P_STREAM_MAX_FRAME];
 } rp2p_stream_pending_frame_t;
 
-static rp2p_t *g_signal_ctx = NULL;
+static rp2p_t **g_signal_ctx_list = NULL;
+static int g_signal_ctx_cap = 0;
+static int g_signal_ctx_count = 0;
 
 static int rp2p_is_stop_requested(rp2p_t *ctx);
 
@@ -1888,10 +1890,15 @@ static void rp2p_consumer_session_close(rp2p_udp_consumer_session_t *sess) {
  * @return Status code.
  */
 static void rp2p_signal_handler(int sig) {
-    if (g_signal_ctx) {
-        if (rp2p_raise_signal(g_signal_ctx, sig) > 0)
-            return;
+    int i;
+    int handled = 0;
+    for (i = 0; i < g_signal_ctx_count; i++) {
+        if (g_signal_ctx_list[i] &&
+            rp2p_raise_signal(g_signal_ctx_list[i], sig) > 0)
+            handled = 1;
     }
+    if (handled)
+        return;
     signal(sig, SIG_DFL);
     raise(sig);
 }
@@ -1962,8 +1969,18 @@ int rp2p_raise_signal(rp2p_t *ctx, int sig) {
  * @return 0 on success, -1 on error.
  */
 int rp2p_listen_signals(rp2p_t *ctx) {
+    rp2p_t **new_list;
     if (!ctx) return RP2P_ERROR;
-    g_signal_ctx = ctx;
+    if (g_signal_ctx_count >= g_signal_ctx_cap) {
+        int new_cap = g_signal_ctx_cap ? g_signal_ctx_cap * 2 : 4;
+        new_list = (rp2p_t **)realloc(
+            g_signal_ctx_list,
+            (size_t)new_cap * sizeof(rp2p_t *));
+        if (!new_list) return RP2P_ERROR;
+        g_signal_ctx_list = new_list;
+        g_signal_ctx_cap = new_cap;
+    }
+    g_signal_ctx_list[g_signal_ctx_count++] = ctx;
     return RP2P_OK;
 }
 
@@ -2804,6 +2821,13 @@ int rp2p_open(rp2p_t **out) {
 int rp2p_close(rp2p_t *ctx) {
     int i;
     if (!ctx) return RP2P_ERROR;
+    for (i = 0; i < g_signal_ctx_count; i++) {
+        if (g_signal_ctx_list[i] == ctx) {
+            g_signal_ctx_list[i] =
+                g_signal_ctx_list[--g_signal_ctx_count];
+            break;
+        }
+    }
     for (i = 0; i < ctx->n_conns; i++)
         RP2P_FD_CLOSE(ctx->conns[i].fd);
     free(ctx->conns);
