@@ -27,7 +27,7 @@ else()
     add_compile_options(/O2 /W3 /WX)
 endif()
 
-# Shared library (for external use)
+# Shared library
 set(RP2P_SOURCES
     src/librp2p.c
     lib/monocypher/monocypher.c
@@ -42,7 +42,7 @@ if(NOT RP2P_TEST_EXTERNAL_ARTIFACTS)
     set_target_properties(rp2p_shared PROPERTIES OUTPUT_NAME "rp2p")
     target_include_directories(rp2p_shared PRIVATE src lib/monocypher)
 
-    # Static library (for external use)
+    # Static library
     add_library(rp2p_static STATIC ${RP2P_SOURCES})
     set_target_properties(rp2p_static PROPERTIES OUTPUT_NAME "rp2p")
     target_include_directories(rp2p_static PRIVATE src lib/monocypher)
